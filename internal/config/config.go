@@ -87,6 +87,13 @@ type TrackerOptions struct {
 	TopicLinkSelector    string `json:"topic_link_selector"`
 	DownloadLinkSelector string `json:"download_link_selector"`
 	ForumLinkSelector    string `json:"forum_link_selector"`
+
+	// SizeCellIndex is the zero-based <td> holding the size and the download
+	// link. TorrentPier renders 0 publish, 1 status, 2 forum, 3 topic,
+	// 4 author, 5 size/download, 6 seeders, 7 leechers, 8 replies, 9 added,
+	// but column order is the knob most likely to differ between trackers.
+	// A negative value skips the direct lookup and scans the whole row.
+	SizeCellIndex int `json:"size_cell_index"`
 }
 
 // DefaultTrackerOptions returns the TorrentPier defaults.
@@ -105,6 +112,7 @@ func DefaultTrackerOptions() TrackerOptions {
 		TopicLinkSelector:    "a[href*='topic-']",
 		DownloadLinkSelector: "a[href*='dl.php?id=']",
 		ForumLinkSelector:    "a[href*='forum-']",
+		SizeCellIndex:        5,
 	}
 }
 

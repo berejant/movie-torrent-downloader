@@ -9,13 +9,9 @@ import (
 	"github.com/toxa/movie-torrent-downloader/internal/media"
 )
 
-// sizeCellIndex is where TorrentPier renders the size and the download link:
-// 0 publish, 1 status, 2 forum, 3 topic, 4 author, 5 size/download,
-// 6 seeders, 7 leechers, 8 replies, 9 added.
-//
 // Seeder and leecher columns are parsed by nobody on purpose: results are
 // frequently cross-posted with stale swarm numbers, so they are not a signal.
-const sizeCellIndex = 5
+// The size column is configurable via TrackerOptions.SizeCellIndex.
 
 // parseResults extracts every usable row from a search result page.
 func (c *Client) parseResults(doc *goquery.Document, pageURL string) []Torrent {
@@ -73,13 +69,13 @@ func (c *Client) parseRow(row *goquery.Selection, base *url.URL) (Torrent, bool)
 	}, true
 }
 
-// findSizeText prefers the documented column but falls back to scanning the
+// findSizeText prefers the configured column but falls back to scanning the
 // row, so a theme that shifts columns degrades instead of losing every size.
 func (c *Client) findSizeText(row *goquery.Selection) string {
 	cells := row.Find("td")
 
-	if cells.Length() > sizeCellIndex {
-		candidate := strings.TrimSpace(cells.Eq(sizeCellIndex).Text())
+	if index := c.options.SizeCellIndex; index >= 0 && cells.Length() > index {
+		candidate := strings.TrimSpace(cells.Eq(index).Text())
 		if media.ParseSizeBytes(candidate) > 0 {
 			return candidate
 		}

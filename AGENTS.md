@@ -92,9 +92,12 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
   "result_row_selector": "#forum_table tbody tr",
   "topic_link_selector": "a[href*='topic-']",
   "download_link_selector": "a[href*='dl.php?id=']",
-  "forum_link_selector": "a[href*='forum-']"
+  "forum_link_selector": "a[href*='forum-']",
+  "size_cell_index": 5
 }
 ```
+
+`size_cell_index` is the zero-based `<td>` holding the size and the download link; set it to `-1` to skip the direct lookup and scan the whole row for the first cell that parses as a size.
 
 #### Retry
 | Variable | Default |
