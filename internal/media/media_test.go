@@ -117,10 +117,34 @@ func TestTrackerPriorityBeatsQuality(t *testing.T) {
 	}
 }
 
+func TestSafeTitle(t *testing.T) {
+	cases := map[string]string{
+		// The real-world case: separators become spaces, not underscores, and
+		// only the first seven words survive.
+		"Сікаріо 2 / Sicario: Day of the Soldado (2018) UHD BDRemux 4K 2160p HDR 2xUkr/Eng | Sub Eng": "Сікаріо 2 Sicario Day of the Soldado",
+		"Dune: Part Two (2024)":     "Dune Part Two 2024",
+		"Spider-Man   No  Way Home": "Spider-Man No Way Home",
+		"S.W.A.T.":                  "S.W.A.T",
+		"  ///  ":                   "",
+	}
+
+	for input, want := range cases {
+		if got := SafeTitle(input); got != want {
+			t.Errorf("SafeTitle(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestSafeTitleKeepsAtMostSevenWords(t *testing.T) {
+	got := SafeTitle("one two three four five six seven eight nine")
+	if want := "one two three four five six seven"; got != want {
+		t.Errorf("SafeTitle() = %q, want %q", got, want)
+	}
+}
+
 func TestFilename(t *testing.T) {
 	got := Filename("Dune: Part Two (2024)", "mazepa", Quality2160, "01JQ8X4M7ZK3RN")
-	// The trailing separator run is trimmed, so the name never ends in "_-".
-	want := "Dune_ Part Two _2024-mazepa-2160p-01JQ8X4M7ZK3RN.torrent"
+	want := "Dune Part Two 2024-mazepa-2160p-01JQ8X4M7ZK3RN.torrent"
 	if got != want {
 		t.Errorf("Filename() = %q, want %q", got, want)
 	}

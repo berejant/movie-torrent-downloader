@@ -1,16 +1,19 @@
 {{ define "jobs" }}
 {{/*
-  The whole fragment is swapped by every action and by the poller.
+  The whole fragment is swapped by every action and by the refresh timer.
 
-  Polling only exists while something is in flight: when every request has
-  reached a terminal state the hx-trigger is omitted entirely, so an idle page
-  stops talking to the server. The [noSelection()] filter pauses polling while
-  rows are selected, so a swap never wipes a batch selection mid-click.
+  The refresh is NOT an "every 3s" polling trigger. A blind poll swaps this
+  section out from under whatever the operator is doing: it closes an open edit
+  form mid-typing, and — because htmx drops a request whose issuing element has
+  been removed from the DOM — it can silently cancel a Retry that is already in
+  flight. Instead app.js owns the timer and fires refreshJobs only when the UI
+  is idle. data-active tells it whether there is anything left to watch.
 */}}
 <section id="jobs"
+         data-active="{{ if .Active }}true{{ else }}false{{ end }}"
          hx-get="/requests/table?status={{ .Filter }}"
          hx-swap="outerHTML"
-         {{ if .Active }}hx-trigger="every 3s [noSelection()]"{{ end }}>
+         hx-trigger="refreshJobs from:body">
 
     {{ with .Notice }}<p class="notice" role="status">{{ . }}</p>{{ end }}
     {{ with .Problem }}<p class="problem" role="alert">{{ . }}</p>{{ end }}

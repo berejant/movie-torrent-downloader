@@ -88,8 +88,8 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
   "login_submit_value": "Увійти",
   "search_query_field": "nm",
   "logged_in_selector": "a[href*='logout']",
-  "logged_out_selector": "a[href*='login.php']",
-  "result_row_selector": "table tr",
+  "logged_out_selector": "#register_link",
+  "result_row_selector": "#forum_table tbody tr",
   "topic_link_selector": "a[href*='topic-']",
   "download_link_selector": "a[href*='dl.php?id=']",
   "forum_link_selector": "a[href*='forum-']"
@@ -215,7 +215,12 @@ Candidates are ordered by, in strict precedence:
 ```
 e.g. `dune part two-mazepa-2160p-01JQ8X4M7ZK3RN.torrent`
 
-- `<title>` is the sanitized release title (letters/digits/space/`-`/`_`/`.` preserved, everything else `_`, truncated to 140 chars).
+- `<title>` is the cleaned release title: letters, digits, `-` and `.` are kept, **every other character becomes a space**, whitespace runs collapse, and only the **first 7 words** survive (140-char backstop). Tracker titles carry the whole release description, and everything past the first few words is either noise or already captured by the quality token:
+
+  ```
+  Сікаріо 2 / Sicario: Day of the Soldado (2018) UHD BDRemux 4K 2160p HDR 2xUkr/Eng | Sub Eng
+  -> Сікаріо 2 Sicario Day of the Soldado-mazepa-2160p-01KYYJA6CMF8N3Q77NAM0VJ4DQ.torrent
+  ```
 - `<tracker>` is `TRACKER_NAME`.
 - `<requestID>` is the task's ULID — sortable, filename-safe, and **guarantees one file per task**, so removing a task never deletes another task's file.
 - Write to a temp file in the same directory, then `os.Rename` into place.

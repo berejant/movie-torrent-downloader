@@ -235,27 +235,47 @@ func Filename(title, tracker, quality, requestID string) string {
 	return fmt.Sprintf("%s-%s-%s-%s.torrent", safe, tracker, quality, requestID)
 }
 
-// SafeTitle strips anything that has no business in a filename.
+// maxTitleWords keeps the filename readable. Tracker titles carry the whole
+// release description — dual titles, year, source, resolution, audio tracks,
+// subtitles — and everything past the first few words is already captured by
+// the quality token or simply noise:
+//
+//	Сікаріо 2 / Sicario: Day of the Soldado (2018) UHD BDRemux 4K 2160p HDR 2xUkr/Eng | Sub Eng
+//	-> Сікаріо 2 Sicario Day of the Soldado
+const maxTitleWords = 7
+
+// SafeTitle turns a release title into the filename fragment.
+//
+// Separators such as "/", ":" and "|" become spaces rather than underscores:
+// an underscore is a visible character that survives into the filename, so
+// replacing punctuation with it produced names like "Sicario_ Day _2018_".
 func SafeTitle(value string) string {
 	var out strings.Builder
 	out.Grow(len(value))
 
-	for _, r := range strings.TrimSpace(value) {
+	for _, r := range value {
 		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r), r == ' ', r == '-', r == '_', r == '.':
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			out.WriteRune(r)
+		case r == '-', r == '.':
+			// Kept so "Spider-Man" and "S.W.A.T." stay intact.
 			out.WriteRune(r)
 		default:
-			out.WriteRune('_')
+			out.WriteRune(' ')
 		}
 	}
 
-	name := reWhitespace.ReplaceAllString(out.String(), " ")
-	name = strings.Trim(strings.TrimSpace(name), "._-")
+	words := strings.Fields(out.String()) // splits and collapses in one pass
+	if len(words) > maxTitleWords {
+		words = words[:maxTitleWords]
+	}
 
-	// Truncate on a rune boundary; 140 chars leaves room for the suffix.
+	name := strings.Trim(strings.Join(words, " "), "-. ")
+
+	// Length backstop for a title whose seven words are unusually long.
 	const maxLen = 140
 	if runes := []rune(name); len(runes) > maxLen {
-		name = strings.TrimSpace(string(runes[:maxLen]))
+		name = strings.Trim(strings.TrimSpace(string(runes[:maxLen])), "-. ")
 	}
 	return name
 }

@@ -120,12 +120,21 @@ func (s *Server) handleRetry(c echo.Context) error {
 		}
 	}
 
-	if err := s.store.Retry(c.Request().Context(), id, query, normalized, force); err != nil {
+	if err := s.store.Retry(c.Request().Context(), id, query, normalized, force, s.cfg.DuplicateCheckEnabled); err != nil {
 		return s.actionError(c, err)
 	}
 
-	s.notifier.Notify()
-	return s.renderTable(c, http.StatusOK, "Request re-queued.", "")
+	// Re-queueing can land straight back on DUPLICATE when the title was
+	// already downloaded, so report what actually happened.
+	notice := "Request re-queued."
+	if request, err := s.store.Get(c.Request().Context(), id); err == nil &&
+		request.Status == storage.StatusDuplicate {
+		notice = "Still a duplicate of an earlier download — use Force to process it anyway."
+	} else {
+		s.notifier.Notify()
+	}
+
+	return s.renderTable(c, http.StatusOK, notice, "")
 }
 
 func (s *Server) handleCancel(c echo.Context) error {
@@ -174,9 +183,9 @@ func (s *Server) handleBatchAction(c echo.Context) error {
 
 		switch action {
 		case "retry":
-			actionErr = s.store.Retry(ctx, id, "", "", false)
+			actionErr = s.store.Retry(ctx, id, "", "", false, s.cfg.DuplicateCheckEnabled)
 		case "force":
-			actionErr = s.store.Retry(ctx, id, "", "", true)
+			actionErr = s.store.Retry(ctx, id, "", "", true, false)
 		case "cancel":
 			actionErr = s.store.Cancel(ctx, id)
 		case "delete":

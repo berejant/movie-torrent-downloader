@@ -16,6 +16,15 @@ import (
 	"github.com/toxa/movie-torrent-downloader/internal/media"
 )
 
+// The fixture mirrors the markup the default selectors target on the real
+// tracker: an anonymous visitor gets a #register_link, an authenticated one
+// gets a logout link, and results live in #forum_table.
+const (
+	loggedOutPage = `<html><body><a href="login.php">Login</a>` +
+		`<a id="register_link" href="profile.php?mode=register">Register</a></body></html>`
+	loggedInMarkup = `<a href="logout.php">Logout</a>`
+)
+
 // fakeTracker is a minimal stand-in for a TorrentPier install: it checks the
 // login form, sets a session cookie and renders a result table in the column
 // layout the parser expects.
@@ -30,21 +39,21 @@ func fakeTracker(t *testing.T) *httptest.Server {
 			return
 		}
 		if r.Form.Get("login_username") != "tester" || r.Form.Get("login_password") != "secret" {
-			_, _ = io.WriteString(w, `<html><body><a href="login.php">Login</a></body></html>`)
+			_, _ = io.WriteString(w, loggedOutPage)
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: "session", Value: "ok", Path: "/"})
-		_, _ = io.WriteString(w, `<html><body><a href="logout.php">Logout</a></body></html>`)
+		_, _ = io.WriteString(w, `<html><body>`+loggedInMarkup+`</body></html>`)
 	})
 
 	mux.HandleFunc("/tracker.php", func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie("session"); err != nil || cookie.Value != "ok" {
-			_, _ = io.WriteString(w, `<html><body><a href="login.php">Login</a></body></html>`)
+			_, _ = io.WriteString(w, loggedOutPage)
 			return
 		}
 
 		var body strings.Builder
-		body.WriteString(`<html><body><a href="logout.php">Logout</a><table>`)
+		body.WriteString(`<html><body>` + loggedInMarkup + `<table id="forum_table">`)
 		body.WriteString(`<tr><th>added</th><th>st</th><th>forum</th><th>topic</th>` +
 			`<th>author</th><th>size</th><th>S</th><th>L</th><th>R</th><th>date</th></tr>`)
 

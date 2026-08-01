@@ -300,6 +300,9 @@ func (c *Client) fetchDocument(ctx context.Context, target, referer string) (*go
 	if err != nil {
 		return nil, Transient(fmt.Errorf("tracker: parse html: %w", err))
 	}
+	// html, _ := doc.Html()
+	// fmt.Printf("Fetched document from %s:\n%s\n", target, html) // Debugging output
+
 	return doc, nil
 }
 

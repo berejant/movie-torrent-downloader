@@ -163,12 +163,18 @@ func (s *Store) CreateBatch(
 	return created, nil
 }
 
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx, so the duplicate lookup
+// works inside a batch transaction and on its own.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // duplicateOf returns the id of an earlier request with the same normalized
 // query that reached DOWNLOADED. Only successful downloads count: a title that
 // previously failed or was not found may be resubmitted freely.
-func duplicateOf(ctx context.Context, tx *sql.Tx, normalized, excludeID string) (string, error) {
+func duplicateOf(ctx context.Context, db rowQuerier, normalized, excludeID string) (string, error) {
 	var id string
-	err := tx.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT id FROM requests
 		 WHERE normalized_query = ? AND status = ? AND id <> ?
 		 ORDER BY created_at LIMIT 1`,
@@ -318,7 +324,11 @@ func (s *Store) RequeueInFlight(ctx context.Context) (int, error) {
 
 // Retry re-queues a terminal request. A non-empty query replaces the search
 // string (the NOT_FOUND edit flow); force bypasses the duplicate check.
-func (s *Store) Retry(ctx context.Context, id, query, normalized string, force bool) error {
+//
+// The duplicate check is re-applied here, not only at submission: retrying a
+// DUPLICATE row without forcing it must stay rejected, otherwise the plain
+// Retry button would quietly become a Force button.
+func (s *Store) Retry(ctx context.Context, id, query, normalized string, force, checkDuplicates bool) error {
 	request, err := s.Get(ctx, id)
 	if err != nil {
 		return err
@@ -335,13 +345,27 @@ func (s *Store) Retry(ctx context.Context, id, query, normalized string, force b
 		request.Force = true
 	}
 
+	status := StatusQueued
+	lastError := ""
+
+	if checkDuplicates && !request.Force {
+		original, err := duplicateOf(ctx, s.db, request.NormalizedQuery, id)
+		if err != nil {
+			return err
+		}
+		if original != "" {
+			status = StatusDuplicate
+			lastError = "duplicate of request " + original
+		}
+	}
+
 	return s.exec(ctx,
 		`UPDATE requests
 		 SET status = ?, query = ?, normalized_query = ?, force = ?,
-		     attempt_count = 0, next_attempt_at = NULL, last_error = '', updated_at = ?
+		     attempt_count = 0, next_attempt_at = NULL, last_error = ?, updated_at = ?
 		 WHERE id = ?`,
-		string(StatusQueued), request.Query, request.NormalizedQuery,
-		boolToInt(request.Force), s.now().Unix(), id,
+		string(status), request.Query, request.NormalizedQuery,
+		boolToInt(request.Force), lastError, s.now().Unix(), id,
 	)
 }
 
