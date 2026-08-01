@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Movie Torrent Downloader</title>
+    <link rel="stylesheet" href="/static/pico.classless.min.css">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header>
+    <h1>Movie Torrent Downloader</h1>
+    <p>Searching <strong>{{ .Tracker }}</strong> — up to {{ .MaxLines }} titles per batch.</p>
+</header>
+
+<main>
+    <article>
+        <form hx-post="/requests" hx-target="#jobs" hx-swap="outerHTML" hx-disabled-elt="find button">
+            <label for="titles">
+                Movie titles
+                <textarea id="titles" name="titles" rows="6"
+                          placeholder="One title per line, e.g.&#10;Dune Part Two 2024&#10;Оппенгеймер 2023"></textarea>
+            </label>
+            <fieldset>
+                <label for="force">
+                    <input type="checkbox" id="force" name="force" value="1">
+                    Force — process even if the title was downloaded before
+                </label>
+            </fieldset>
+            <button type="submit">Queue batch</button>
+        </form>
+    </article>
+
+    {{ template "jobs" . }}
+</main>
+
+<footer>
+    <small>Files are saved to the configured <code>TORRENT_FILES_DIR</code>.</small>
+</footer>
+</body>
+</html>

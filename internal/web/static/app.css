@@ -1,0 +1,215 @@
+/* Small layer on top of Pico's classless defaults. */
+
+body {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+header h1 {
+    margin-bottom: 0.25rem;
+}
+
+textarea {
+    font-family: var(--pico-font-family-monospace, monospace);
+}
+
+.notice,
+.problem {
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--pico-border-radius, 4px);
+    margin-bottom: 0.75rem;
+}
+
+.notice {
+    background: color-mix(in srgb, var(--pico-primary) 12%, transparent);
+    border-left: 3px solid var(--pico-primary);
+}
+
+.problem {
+    background: color-mix(in srgb, #d93526 14%, transparent);
+    border-left: 3px solid #d93526;
+}
+
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.filters a {
+    font-size: 0.8rem;
+    padding: 0.15rem 0.55rem;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 999px;
+    text-decoration: none;
+}
+
+.filters a.active {
+    border-color: var(--pico-primary);
+    color: var(--pico-primary);
+}
+
+.filters .count {
+    opacity: 0.6;
+}
+
+.batch-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.batch-bar button {
+    width: auto;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+    margin: 0;
+}
+
+.select-all {
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.selection-hint {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    margin-right: auto;
+}
+
+/* Wide tables scroll inside their own container, never the page body. */
+.table-wrap {
+    overflow-x: auto;
+}
+
+table {
+    font-size: 0.88rem;
+}
+
+td,
+th {
+    vertical-align: top;
+}
+
+.query,
+.match {
+    font-weight: 600;
+}
+
+small {
+    display: block;
+    line-height: 1.35;
+}
+
+.muted {
+    opacity: 0.6;
+}
+
+.error {
+    color: #e0736a;
+    max-width: 36ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file {
+    opacity: 0.75;
+    max-width: 30ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+
+.status.ok {
+    background: color-mix(in srgb, #2e9e5b 25%, transparent);
+}
+
+.status.bad {
+    background: color-mix(in srgb, #d93526 25%, transparent);
+}
+
+.status.busy {
+    background: color-mix(in srgb, #3b7fd4 25%, transparent);
+}
+
+.status.muted {
+    background: color-mix(in srgb, #808080 22%, transparent);
+}
+
+.tag {
+    display: inline-block;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 3px;
+    padding: 0 0.3rem;
+    margin-right: 0.2rem;
+    font-size: 0.72rem;
+}
+
+.actions {
+    white-space: nowrap;
+}
+
+.actions button {
+    width: auto;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+    margin: 0 0.15rem 0.15rem 0;
+}
+
+.actions .danger {
+    --pico-background-color: #b23b30;
+    --pico-border-color: #b23b30;
+}
+
+.edit {
+    margin-top: 0.3rem;
+}
+
+.edit summary {
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.edit form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+    min-width: 22rem;
+}
+
+.edit input[type="text"] {
+    margin: 0;
+    font-size: 0.8rem;
+}
+
+.edit label {
+    font-size: 0.75rem;
+    margin: 0;
+}
+
+.edit button {
+    width: auto;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    margin: 0;
+}
+
+.empty {
+    opacity: 0.7;
+    font-style: italic;
+}

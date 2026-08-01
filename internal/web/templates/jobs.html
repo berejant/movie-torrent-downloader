@@ -1,0 +1,130 @@
+{{ define "jobs" }}
+{{/*
+  The whole fragment is swapped by every action and by the poller.
+
+  Polling only exists while something is in flight: when every request has
+  reached a terminal state the hx-trigger is omitted entirely, so an idle page
+  stops talking to the server. The [noSelection()] filter pauses polling while
+  rows are selected, so a swap never wipes a batch selection mid-click.
+*/}}
+<section id="jobs"
+         hx-get="/requests/table?status={{ .Filter }}"
+         hx-swap="outerHTML"
+         {{ if .Active }}hx-trigger="every 3s [noSelection()]"{{ end }}>
+
+    {{ with .Notice }}<p class="notice" role="status">{{ . }}</p>{{ end }}
+    {{ with .Problem }}<p class="problem" role="alert">{{ . }}</p>{{ end }}
+
+    <nav class="filters">
+        <a href="#" hx-get="/requests/table" hx-target="#jobs" hx-swap="outerHTML"
+           class="{{ if eq (printf "%s" .Filter) "" }}active{{ end }}">All</a>
+        {{ $filter := .Filter }}
+        {{ range statusValues }}
+            {{ $count := index $.Counts . }}
+            {{ if $count }}
+                <a href="#" hx-get="/requests/table?status={{ . }}" hx-target="#jobs" hx-swap="outerHTML"
+                   class="{{ if eq $filter . }}active{{ end }}">{{ . }} <span class="count">{{ $count }}</span></a>
+            {{ end }}
+        {{ end }}
+    </nav>
+
+    <div class="batch-bar">
+        <label class="select-all">
+            <input type="checkbox" onclick="toggleAll(this)"> Select all
+        </label>
+        <span class="selection-hint" id="selection-hint"></span>
+        <button class="secondary" hx-post="/requests/batch" hx-vals='{"action":"retry"}'
+                hx-include="[name='ids']:checked" hx-target="#jobs" hx-swap="outerHTML">Retry</button>
+        <button class="secondary" hx-post="/requests/batch" hx-vals='{"action":"force"}'
+                hx-include="[name='ids']:checked" hx-target="#jobs" hx-swap="outerHTML">Force</button>
+        <button class="secondary" hx-post="/requests/batch" hx-vals='{"action":"cancel"}'
+                hx-include="[name='ids']:checked" hx-target="#jobs" hx-swap="outerHTML">Cancel</button>
+        <button class="danger" hx-post="/requests/batch" hx-vals='{"action":"delete"}'
+                hx-include="[name='ids']:checked" hx-target="#jobs" hx-swap="outerHTML"
+                hx-confirm="Remove the selected requests and their .torrent files?">Remove</button>
+    </div>
+
+    {{ if not .Requests }}
+        <p class="empty">No requests yet. Paste a list of titles above to get started.</p>
+    {{ else }}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th></th>
+                <th>Query</th>
+                <th>Status</th>
+                <th>Match</th>
+                <th>Updated</th>
+                <th>Actions</th>
+            </tr>
+            </thead>
+            <tbody>
+            {{ range .Requests }}
+                <tr>
+                    <td><input type="checkbox" name="ids" value="{{ .ID }}" onchange="refreshSelection()"></td>
+
+                    <td>
+                        <div class="query">{{ .Query }}</div>
+                        {{ if ne .Query .RawTitle }}<small class="muted">input: {{ .RawTitle }}</small>{{ end }}
+                        {{ with .LastError }}<small class="error" title="{{ . }}">{{ . }}</small>{{ end }}
+                    </td>
+
+                    <td>
+                        <span class="status {{ statusClass .Status }}">{{ .Status }}</span>
+                        {{ if .Force }}<small class="muted">forced</small>{{ end }}
+                        {{ if gt .AttemptCount 1 }}<small class="muted">attempt {{ .AttemptCount }}</small>{{ end }}
+                        {{ with .NextAttemptAt }}<small class="muted">retry at {{ localTime . }}</small>{{ end }}
+                    </td>
+
+                    <td>
+                        {{ with .ResultTitle }}<div class="match">{{ . }}</div>{{ end }}
+                        {{ if .ResultQuality }}
+                            <small class="tags">
+                                <span class="tag">{{ .ResultQuality }}</span>
+                                {{ if .ResultCodec }}<span class="tag">{{ .ResultCodec }}</span>{{ end }}
+                                {{ with humanSize .ResultSize }}<span class="tag">{{ . }}</span>{{ end }}
+                            </small>
+                        {{ end }}
+                        {{ with .FilePath }}<small class="file" title="{{ . }}">{{ baseName . }}</small>{{ end }}
+                    </td>
+
+                    <td><small>{{ localTime .UpdatedAt }}</small></td>
+
+                    <td class="actions">
+                        {{ if canRetry .Status }}
+                            <button class="secondary" hx-post="/requests/{{ .ID }}/retry"
+                                    hx-target="#jobs" hx-swap="outerHTML">Retry</button>
+                        {{ end }}
+                        {{ if canCancel .Status }}
+                            <button class="secondary" hx-post="/requests/{{ .ID }}/cancel"
+                                    hx-target="#jobs" hx-swap="outerHTML">Cancel</button>
+                        {{ end }}
+                        <button class="danger" hx-post="/requests/{{ .ID }}/delete"
+                                hx-target="#jobs" hx-swap="outerHTML"
+                                hx-confirm="Remove this request and its .torrent file?">Remove</button>
+
+                        {{ if canRetry .Status }}
+                            {{/* Edit-and-retry: the NOT_FOUND and DUPLICATE recovery path. */}}
+                            <details class="edit">
+                                <summary>Edit query</summary>
+                                <form hx-post="/requests/{{ .ID }}/retry" hx-target="#jobs" hx-swap="outerHTML">
+                                    <input type="text" name="query" value="{{ .Query }}" aria-label="Search query">
+                                    <label>
+                                        <input type="checkbox" name="force" value="1"
+                                               {{ if eq .Status "DUPLICATE" }}checked{{ end }}>
+                                        Force
+                                    </label>
+                                    <button type="submit">Save &amp; retry</button>
+                                </form>
+                            </details>
+                        {{ end }}
+                    </td>
+                </tr>
+            {{ end }}
+            </tbody>
+        </table>
+    </div>
+    {{ end }}
+</section>
+{{ end }}

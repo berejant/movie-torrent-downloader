@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+.env
+data
+docs
+*.md
+!go.mod
+!go.sum

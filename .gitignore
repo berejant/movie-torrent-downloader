@@ -1,0 +1,15 @@
+# Secrets and local runtime state
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Build output
+/server
+/out/
+
+# Editor
+.idea/
+.vscode/
+.DS_Store
