@@ -71,6 +71,27 @@ go test ./...     # ranking, normalization and the tracker pipeline
 go vet ./...
 ```
 
+## CI and published images
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. **Test** — `gofmt` check, `go vet`, `go test -race`, `go build`.
+2. **Docker** — builds `linux/amd64` and `linux/arm64` and pushes to GHCR.
+
+Pull requests build the image but never publish it. Pushes to the default
+branch publish `latest`; version tags (`v1.2.3`) publish `1.2.3` and `1.2`.
+Every build is also tagged with its short commit SHA.
+
+Pull a published image with:
+
+```sh
+docker pull ghcr.io/<owner>/movie-torrent-downloader:latest
+```
+
+Packages are private by default — make the package public (or log the NAS in
+with a personal access token that has `read:packages`) before pulling from
+Synology.
+
 ## Configuration
 
 Every setting is an environment variable — see [.env.example](.env.example) for
