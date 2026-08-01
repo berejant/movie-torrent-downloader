@@ -13,3 +13,5 @@ data/
 .idea/
 .vscode/
 .DS_Store
+
+docker-compose.synology*.yml
