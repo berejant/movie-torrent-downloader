@@ -108,12 +108,38 @@ func TestBetterOrdersByQualityThenCodecThenSize(t *testing.T) {
 	}
 }
 
-func TestTrackerPriorityBeatsQuality(t *testing.T) {
+func TestQualityBeatsTrackerPriority(t *testing.T) {
 	preferred := Ranked{Priority: 1, Attributes: Attributes{Quality: Quality720, Codec: CodecH264}}
-	other := Ranked{Priority: 2, Attributes: Attributes{Quality: Quality2160, Codec: CodecH265}}
+	better := Ranked{Priority: 2, Attributes: Attributes{Quality: Quality2160, Codec: CodecH265}}
+
+	if !Better(better, preferred) {
+		t.Error("a higher quality tier must outrank the preferred tracker")
+	}
+}
+
+// Tracker priority is the tie-breaker between releases that are equally good,
+// which is the only place it applies.
+func TestTrackerPriorityBreaksTies(t *testing.T) {
+	attributes := Attributes{Quality: Quality1080, Codec: CodecH265, SizeBytes: 4 << 30}
+	preferred := Ranked{Priority: 1, Attributes: attributes}
+	other := Ranked{Priority: 2, Attributes: attributes}
 
 	if !Better(preferred, other) {
-		t.Error("tracker priority must outrank quality")
+		t.Error("the lower priority value must win when quality and codec match")
+	}
+	if Better(other, preferred) {
+		t.Error("priority ordering must not be symmetric")
+	}
+}
+
+// Size never overrides tracker priority: a small release on the preferred
+// tracker beats a large one elsewhere at the same quality and codec.
+func TestTrackerPriorityBeatsSize(t *testing.T) {
+	preferred := Ranked{Priority: 1, Attributes: Attributes{Quality: Quality1080, Codec: CodecH265, SizeBytes: 4 << 30}}
+	larger := Ranked{Priority: 2, Attributes: Attributes{Quality: Quality1080, Codec: CodecH265, SizeBytes: 40 << 30}}
+
+	if !Better(preferred, larger) {
+		t.Error("tracker priority must outrank size")
 	}
 }
 

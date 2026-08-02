@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,29 +38,48 @@ type Config struct {
 
 	DuplicateCheckEnabled bool `env:"DUPLICATE_CHECK_ENABLED" envDefault:"true"`
 
-	Tracker Tracker `envPrefix:"TRACKER_"`
-	Retry   Retry   `envPrefix:"RETRY_"`
+	// Workers is the size of the shared worker pool: how many requests are
+	// searched at once. It is not per tracker — one request queries every
+	// tracker — and per-tracker load stays bounded by that tracker's RPS.
+	Workers int `env:"WORKERS" envDefault:"5"`
+
+	// TrackerNames lists the enabled tracker slugs in configuration order.
+	// Empty selects the legacy single-tracker layout (unprefixed TRACKER_*).
+	TrackerNames []string `env:"TRACKERS" envSeparator:","`
+
+	// Trackers is TrackerNames resolved against the presets and the
+	// TRACKER_<SLUG>_* variables.
+	Trackers []Tracker `env:"-"`
+
+	Retry Retry `envPrefix:"RETRY_"`
 }
 
-// Tracker holds the configuration of a single tracker source. MVP wires up
-// exactly one; the struct is shaped so more can be added later.
+// Tracker holds the configuration of a single tracker source. Its variables are
+// read from TRACKER_<SLUG>_*, or from plain TRACKER_* in the legacy layout.
 type Tracker struct {
-	Name           string  `env:"NAME" envDefault:"mazepa"`
-	BaseURL        string  `env:"BASE_URL,required"`
-	Login          string  `env:"LOGIN,required"`
-	Password       string  `env:"PASSWORD,required"`
+	Name string `env:"NAME"`
+	// Preset selects the built-in selector profile; see presets.go. When unset
+	// the tracker slug is tried as a preset name before falling back to
+	// DefaultPresetName.
+	Preset         string  `env:"PRESET"`
+	BaseURL        string  `env:"BASE_URL"`
+	Login          string  `env:"LOGIN"`
+	Password       string  `env:"PASSWORD"`
 	Priority       int     `env:"PRIORITY" envDefault:"1"`
 	TimeoutSeconds int     `env:"TIMEOUT_SECONDS" envDefault:"30"`
-	Workers        int     `env:"WORKERS" envDefault:"5"`
 	RPS            float64 `env:"RPS" envDefault:"1"`
 	MaxSizeBytes   int64   `env:"MAX_SIZE_BYTES" envDefault:"0"`
 	UserAgent      string  `env:"USER_AGENT"`
 
-	// ExtraOptions is the raw JSON blob from TRACKER_EXTRA_OPTIONS.
+	// ExtraOptions is the raw JSON blob from TRACKER_<SLUG>_EXTRA_OPTIONS.
 	ExtraOptions string `env:"EXTRA_OPTIONS"`
 
-	// Options is ExtraOptions parsed and merged over the TorrentPier defaults.
+	// Options is ExtraOptions parsed and merged over the preset.
 	Options TrackerOptions `env:"-"`
+
+	// EnvPrefix is where this tracker's variables were read from, so validation
+	// messages can name the variable the operator actually has to fix.
+	EnvPrefix string `env:"-"`
 }
 
 // Timeout returns the per-request timeout.
@@ -68,7 +89,7 @@ func (t Tracker) Timeout() time.Duration {
 
 // TrackerOptions are the tracker-specific paths, form fields and selectors.
 // Every field is overridable because any tracker theme or engine version can
-// differ; the defaults target TorrentPier (mazepa.to).
+// differ; the built-in profiles live in presets.go.
 type TrackerOptions struct {
 	TrackerPath string `json:"tracker_path"`
 	LoginPath   string `json:"login_path"`
@@ -83,6 +104,10 @@ type TrackerOptions struct {
 	LoggedInSelector  string `json:"logged_in_selector"`
 	LoggedOutSelector string `json:"logged_out_selector"`
 
+	// LoginExtraFields are additional form fields posted with the credentials,
+	// such as toloka's autologin checkbox. Keys are sent verbatim.
+	LoginExtraFields map[string]string `json:"login_extra_fields"`
+
 	ResultRowSelector    string `json:"result_row_selector"`
 	TopicLinkSelector    string `json:"topic_link_selector"`
 	DownloadLinkSelector string `json:"download_link_selector"`
@@ -96,24 +121,10 @@ type TrackerOptions struct {
 	SizeCellIndex int `json:"size_cell_index"`
 }
 
-// DefaultTrackerOptions returns the TorrentPier defaults.
+// DefaultTrackerOptions returns the TorrentPier profile, which is what a
+// tracker gets when no preset matches.
 func DefaultTrackerOptions() TrackerOptions {
-	return TrackerOptions{
-		TrackerPath:          "/tracker.php",
-		LoginPath:            "/login.php",
-		LoginUsernameField:   "login_username",
-		LoginPasswordField:   "login_password",
-		LoginSubmitField:     "login",
-		LoginSubmitValue:     "Увійти",
-		SearchQueryField:     "nm",
-		LoggedInSelector:     "a[href*='logout']",
-		LoggedOutSelector:    "#register_link",
-		ResultRowSelector:    "#forum_table tbody tr",
-		TopicLinkSelector:    "a[href*='topic-']",
-		DownloadLinkSelector: "a[href*='dl.php?id=']",
-		ForumLinkSelector:    "a[href*='forum-']",
-		SizeCellIndex:        5,
-	}
+	return torrentPierOptions()
 }
 
 // Retry describes the persisted retry policy for transient failures.
@@ -137,18 +148,23 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
 
-	options := DefaultTrackerOptions()
-	if raw := strings.TrimSpace(cfg.Tracker.ExtraOptions); raw != "" {
-		// Unmarshalling over the populated struct keeps defaults for any key
-		// the operator did not specify.
-		if err := json.Unmarshal([]byte(raw), &options); err != nil {
-			return Config{}, fmt.Errorf("config: parse TRACKER_EXTRA_OPTIONS: %w", err)
-		}
+	trackers, err := loadTrackers(cfg.TrackerNames)
+	if err != nil {
+		return Config{}, err
 	}
-	cfg.Tracker.Options = options
+	cfg.Trackers = trackers
 
-	if strings.TrimSpace(cfg.Tracker.UserAgent) == "" {
-		cfg.Tracker.UserAgent = DefaultUserAgent
+	// TRACKER_WORKERS used to size the pool back when a pool served one
+	// tracker. Honour it while WORKERS is unset so an existing deployment keeps
+	// its concurrency after the upgrade.
+	if os.Getenv("WORKERS") == "" {
+		if legacy := os.Getenv("TRACKER_WORKERS"); legacy != "" {
+			workers, err := strconv.Atoi(strings.TrimSpace(legacy))
+			if err != nil {
+				return Config{}, fmt.Errorf("config: TRACKER_WORKERS %q is not a number", legacy)
+			}
+			cfg.Workers = workers
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -156,6 +172,118 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// trackerEnvPrefix is where every tracker variable starts. A named tracker adds
+// its slug: TRACKERS=toloka reads TRACKER_TOLOKA_LOGIN.
+const trackerEnvPrefix = "TRACKER_"
+
+// loadTrackers resolves the TRACKERS list into full configurations. An empty
+// list means the legacy layout, where a single tracker is configured with
+// unprefixed TRACKER_* variables.
+func loadTrackers(names []string) ([]Tracker, error) {
+	slugs := make([]string, 0, len(names))
+	for _, name := range names {
+		if slug := strings.ToLower(strings.TrimSpace(name)); slug != "" {
+			slugs = append(slugs, slug)
+		}
+	}
+
+	if len(slugs) == 0 {
+		tracker, err := loadTracker("", trackerEnvPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return []Tracker{tracker}, nil
+	}
+
+	seen := make(map[string]struct{}, len(slugs))
+	trackers := make([]Tracker, 0, len(slugs))
+	for _, slug := range slugs {
+		if _, duplicate := seen[slug]; duplicate {
+			return nil, fmt.Errorf("config: TRACKERS lists %q more than once", slug)
+		}
+		seen[slug] = struct{}{}
+
+		tracker, err := loadTracker(slug, trackerEnvPrefix+envSegment(slug)+"_")
+		if err != nil {
+			return nil, err
+		}
+		trackers = append(trackers, tracker)
+	}
+	return trackers, nil
+}
+
+// loadTracker binds one tracker's variables and merges its preset. slug is
+// empty in the legacy layout, where the name comes from TRACKER_NAME instead.
+func loadTracker(slug, prefix string) (Tracker, error) {
+	var tracker Tracker
+	if err := env.ParseWithOptions(&tracker, env.Options{Prefix: prefix}); err != nil {
+		return Tracker{}, fmt.Errorf("config: %w", err)
+	}
+	tracker.EnvPrefix = prefix
+
+	if slug != "" {
+		// The slug is the identity: it picks the variables, the preset and the
+		// tracker token in saved filenames, so NAME cannot disagree with it.
+		tracker.Name = slug
+	} else if strings.TrimSpace(tracker.Name) == "" {
+		tracker.Name = DefaultPresetName
+	}
+
+	requested := strings.ToLower(strings.TrimSpace(tracker.Preset))
+	preset, ok := LookupPreset(requested)
+	switch {
+	case ok:
+		tracker.Preset = requested
+	case requested != "":
+		return Tracker{}, fmt.Errorf("config: %sPRESET %q is unknown (known presets: %s)",
+			prefix, tracker.Preset, strings.Join(PresetNames(), ", "))
+	default:
+		// No explicit preset: try the tracker's own name before the fallback,
+		// so a tracker named after its preset needs no PRESET variable.
+		if preset, ok = LookupPreset(strings.ToLower(tracker.Name)); ok {
+			tracker.Preset = strings.ToLower(tracker.Name)
+		} else {
+			preset, _ = LookupPreset(DefaultPresetName)
+			tracker.Preset = DefaultPresetName
+		}
+	}
+
+	if strings.TrimSpace(tracker.BaseURL) == "" {
+		tracker.BaseURL = preset.BaseURL
+	}
+
+	options := preset.Options
+	if raw := strings.TrimSpace(tracker.ExtraOptions); raw != "" {
+		// Unmarshalling over the populated struct keeps the preset's value for
+		// any key the operator did not specify.
+		if err := json.Unmarshal([]byte(raw), &options); err != nil {
+			return Tracker{}, fmt.Errorf("config: parse %sEXTRA_OPTIONS: %w", prefix, err)
+		}
+	}
+	tracker.Options = options
+
+	if strings.TrimSpace(tracker.UserAgent) == "" {
+		tracker.UserAgent = DefaultUserAgent
+	}
+
+	return tracker, nil
+}
+
+// envSegment turns a tracker slug into the middle of its variable names:
+// "my-tracker" becomes TRACKER_MY_TRACKER_LOGIN.
+func envSegment(slug string) string {
+	var out strings.Builder
+	out.Grow(len(slug))
+	for _, r := range strings.ToUpper(slug) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			out.WriteRune(r)
+			continue
+		}
+		out.WriteRune('_')
+	}
+	return out.String()
 }
 
 // Validate fails fast with a message naming the offending variable.
@@ -188,30 +316,56 @@ func (c Config) Validate() error {
 		problems = append(problems, "AUTH_USER and AUTH_PASSWORD must be set together or not at all")
 	}
 
-	base, err := url.Parse(strings.TrimRight(c.Tracker.BaseURL, "/"))
-	switch {
-	case err != nil:
-		problems = append(problems, fmt.Sprintf("TRACKER_BASE_URL is not a valid URL: %v", err))
-	case base.Scheme != "http" && base.Scheme != "https":
-		problems = append(problems, "TRACKER_BASE_URL must use http or https")
-	case base.Host == "":
-		problems = append(problems, "TRACKER_BASE_URL must include a host")
+	if c.Workers < 1 {
+		problems = append(problems, fmt.Sprintf("WORKERS must be >= 1, got %d", c.Workers))
+	}
+	if len(c.Trackers) == 0 {
+		problems = append(problems, "at least one tracker must be configured (see TRACKERS)")
 	}
 
-	if c.Tracker.Workers < 1 {
-		problems = append(problems, fmt.Sprintf("TRACKER_WORKERS must be >= 1, got %d", c.Tracker.Workers))
-	}
-	if c.Tracker.RPS <= 0 {
-		problems = append(problems, fmt.Sprintf("TRACKER_RPS must be > 0, got %v", c.Tracker.RPS))
-	}
-	if c.Tracker.TimeoutSeconds < 1 {
-		problems = append(problems, fmt.Sprintf("TRACKER_TIMEOUT_SECONDS must be >= 1, got %d", c.Tracker.TimeoutSeconds))
-	}
-	if c.Tracker.MaxSizeBytes < 0 {
-		problems = append(problems, "TRACKER_MAX_SIZE_BYTES must be >= 0 (0 means unlimited)")
-	}
-	if strings.TrimSpace(c.Tracker.Name) == "" {
-		problems = append(problems, "TRACKER_NAME must not be empty (it is part of saved filenames)")
+	names := make(map[string]struct{}, len(c.Trackers))
+	for _, tracker := range c.Trackers {
+		prefix := tracker.EnvPrefix
+
+		// A duplicated name would make two trackers indistinguishable in saved
+		// filenames and in the result column.
+		if _, duplicate := names[tracker.Name]; duplicate {
+			problems = append(problems, fmt.Sprintf("two trackers are both named %q", tracker.Name))
+		}
+		names[tracker.Name] = struct{}{}
+
+		if strings.TrimSpace(tracker.Name) == "" {
+			problems = append(problems, prefix+"NAME must not be empty (it is part of saved filenames)")
+		}
+		if strings.TrimSpace(tracker.Login) == "" {
+			problems = append(problems, prefix+"LOGIN must not be empty")
+		}
+		if strings.TrimSpace(tracker.Password) == "" {
+			problems = append(problems, prefix+"PASSWORD must not be empty")
+		}
+
+		base, err := url.Parse(strings.TrimRight(tracker.BaseURL, "/"))
+		switch {
+		case strings.TrimSpace(tracker.BaseURL) == "":
+			problems = append(problems, fmt.Sprintf(
+				"%sBASE_URL must be set (preset %q supplies no default)", prefix, tracker.Preset))
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("%sBASE_URL is not a valid URL: %v", prefix, err))
+		case base.Scheme != "http" && base.Scheme != "https":
+			problems = append(problems, prefix+"BASE_URL must use http or https")
+		case base.Host == "":
+			problems = append(problems, prefix+"BASE_URL must include a host")
+		}
+
+		if tracker.RPS <= 0 {
+			problems = append(problems, fmt.Sprintf("%sRPS must be > 0, got %v", prefix, tracker.RPS))
+		}
+		if tracker.TimeoutSeconds < 1 {
+			problems = append(problems, fmt.Sprintf("%sTIMEOUT_SECONDS must be >= 1, got %d", prefix, tracker.TimeoutSeconds))
+		}
+		if tracker.MaxSizeBytes < 0 {
+			problems = append(problems, prefix+"MAX_SIZE_BYTES must be >= 0 (0 means unlimited)")
+		}
 	}
 
 	if c.Retry.MaxAttempts < 1 {
@@ -228,6 +382,28 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+// MaxTrackerTimeout is the longest per-request timeout of any tracker. One
+// attempt searches them in parallel, so the slowest tracker bounds the attempt.
+func (c Config) MaxTrackerTimeout() time.Duration {
+	longest := time.Duration(0)
+	for _, tracker := range c.Trackers {
+		if timeout := tracker.Timeout(); timeout > longest {
+			longest = timeout
+		}
+	}
+	return longest
+}
+
+// TrackerNamesList returns the configured tracker names in order, for the UI
+// header and log lines.
+func (c Config) TrackerNamesList() []string {
+	names := make([]string, 0, len(c.Trackers))
+	for _, tracker := range c.Trackers {
+		names = append(names, tracker.Name)
+	}
+	return names
 }
 
 // AuthEnabled reports whether the UI and API require HTTP basic auth.
@@ -260,23 +436,34 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("batch_max_lines", c.BatchMaxLines),
 		slog.Bool("auth_enabled", c.AuthEnabled()),
 		slog.Bool("duplicate_check_enabled", c.DuplicateCheckEnabled),
-		slog.Group("tracker",
-			slog.String("name", c.Tracker.Name),
-			slog.String("base_url", c.Tracker.BaseURL),
-			slog.String("login", redact(c.Tracker.Login)),
-			slog.String("password", "[REDACTED]"),
-			slog.Int("priority", c.Tracker.Priority),
-			slog.Int("workers", c.Tracker.Workers),
-			slog.Float64("rps", c.Tracker.RPS),
-			slog.Int("timeout_seconds", c.Tracker.TimeoutSeconds),
-			slog.Int64("max_size_bytes", c.Tracker.MaxSizeBytes),
-		),
+		slog.Int("workers", c.Workers),
+		slog.Attr{Key: "trackers", Value: trackerLogValue(c.Trackers)},
 		slog.Group("retry",
 			slog.Int("max_attempts", c.Retry.MaxAttempts),
 			slog.Int("base_seconds", c.Retry.BaseSeconds),
 			slog.Int("max_backoff_seconds", c.Retry.MaxBackoffSeconds),
 		),
 	)
+}
+
+// trackerLogValue renders the trackers as a group keyed by name, secrets
+// redacted. A group rather than a slice: a slice of slog.Value marshals to
+// empty objects, because its fields are unexported.
+func trackerLogValue(trackers []Tracker) slog.Value {
+	groups := make([]slog.Attr, 0, len(trackers))
+	for _, tracker := range trackers {
+		groups = append(groups, slog.Attr{Key: tracker.Name, Value: slog.GroupValue(
+			slog.String("preset", tracker.Preset),
+			slog.String("base_url", tracker.BaseURL),
+			slog.String("login", redact(tracker.Login)),
+			slog.String("password", "[REDACTED]"),
+			slog.Int("priority", tracker.Priority),
+			slog.Float64("rps", tracker.RPS),
+			slog.Int("timeout_seconds", tracker.TimeoutSeconds),
+			slog.Int64("max_size_bytes", tracker.MaxSizeBytes),
+		)})
+	}
+	return slog.GroupValue(groups...)
 }
 
 // redact keeps just enough of a value to recognise it in logs.

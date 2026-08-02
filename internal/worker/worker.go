@@ -3,18 +3,26 @@
 // Workers are stateless: everything they need lives in the request row, and
 // every retry is persisted as next_attempt_at rather than slept in memory.
 // That is what lets a restart pick the schedule back up instead of losing it.
+//
+// One request is one unit of work across every configured tracker: a worker
+// searches them all concurrently, ranks the merged candidates and downloads the
+// winner. The queue is therefore global, not per tracker.
 package worker
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/toxa/movie-torrent-downloader/internal/config"
+	"github.com/toxa/movie-torrent-downloader/internal/media"
 	"github.com/toxa/movie-torrent-downloader/internal/storage"
 	"github.com/toxa/movie-torrent-downloader/internal/tracker"
 )
@@ -24,25 +32,25 @@ import (
 // safety net that picks up due retries.
 const idlePoll = 2 * time.Second
 
-// Pool is the set of workers serving one tracker.
+// Pool is the set of workers serving every configured tracker.
 type Pool struct {
-	store   *storage.Store
-	tracker *tracker.Client
-	cfg     config.Config
-	logger  *slog.Logger
+	store    *storage.Store
+	trackers []*tracker.Client
+	cfg      config.Config
+	logger   *slog.Logger
 
 	wake chan struct{}
 	wg   sync.WaitGroup
 }
 
 // New creates the pool. Call Start to run it.
-func New(store *storage.Store, client *tracker.Client, cfg config.Config, logger *slog.Logger) *Pool {
+func New(store *storage.Store, trackers []*tracker.Client, cfg config.Config, logger *slog.Logger) *Pool {
 	return &Pool{
-		store:   store,
-		tracker: client,
-		cfg:     cfg,
-		logger:  logger.With("component", "worker"),
-		wake:    make(chan struct{}, 1),
+		store:    store,
+		trackers: trackers,
+		cfg:      cfg,
+		logger:   logger.With("component", "worker"),
+		wake:     make(chan struct{}, 1),
 	}
 }
 
@@ -71,13 +79,13 @@ func (p *Pool) Recover(ctx context.Context) error {
 
 // Start launches the configured number of workers and returns immediately.
 func (p *Pool) Start(ctx context.Context) {
-	for i := range p.cfg.Tracker.Workers {
+	for i := range p.cfg.Workers {
 		p.wg.Add(1)
 		go p.run(ctx, i+1)
 	}
 	p.logger.Info("worker pool started",
-		"workers", p.cfg.Tracker.Workers,
-		"rps", p.cfg.Tracker.RPS,
+		"workers", p.cfg.Workers,
+		"trackers", p.cfg.TrackerNamesList(),
 	)
 }
 
@@ -100,7 +108,7 @@ func (p *Pool) run(ctx context.Context, id int) {
 	defer timer.Stop()
 
 	for {
-		request, ok, err := p.store.ClaimNext(ctx, p.cfg.Tracker.Name)
+		request, ok, err := p.store.ClaimNext(ctx)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -129,46 +137,61 @@ func (p *Pool) run(ctx context.Context, id int) {
 	}
 }
 
+// candidate is one tracker result paired with the client that found it, so the
+// download goes back to the tracker the winner actually came from.
+type candidate struct {
+	client  *tracker.Client
+	torrent tracker.Torrent
+}
+
 // process runs one request end to end.
 func (p *Pool) process(ctx context.Context, logger *slog.Logger, request storage.Request) {
 	logger = logger.With("request_id", request.ID, "query", request.Query)
 	logger.Info("processing request", "attempt", request.AttemptCount)
 
 	// Bound a single attempt so one stuck request cannot hold a worker forever.
-	taskCtx, cancel := context.WithTimeout(ctx, 4*p.cfg.Tracker.Timeout())
+	// The trackers are searched in parallel, so the slowest one sets the pace.
+	taskCtx, cancel := context.WithTimeout(ctx, 4*p.cfg.MaxTrackerTimeout())
 	defer cancel()
 
-	torrents, err := p.tracker.Search(taskCtx, request.Query)
-	if err != nil {
-		p.handleError(ctx, logger, request, err, "search")
+	candidates, failures := p.searchAll(taskCtx, request.Query)
+	if len(candidates) == 0 {
+		p.handleError(ctx, logger, request, combineFailures(failures), "search")
 		return
 	}
 
-	best, err := p.tracker.SelectBest(torrents)
-	if err != nil {
-		p.handleError(ctx, logger, request, err, "select")
-		return
+	// A tracker that is down must not withhold a release another tracker
+	// already found, so a partial failure is a log line and nothing more.
+	for _, failure := range failures {
+		if errors.Is(failure.err, tracker.ErrNoResults) {
+			continue
+		}
+		logger.Warn("tracker unavailable, ranking the remaining results",
+			"tracker", failure.tracker, "err", failure.err)
 	}
 
+	best := candidates[0]
 	result := storage.Result{
-		Title:    best.Title,
-		TopicURL: best.TopicURL,
-		Size:     best.SizeBytes,
-		Quality:  best.Quality,
-		Codec:    best.Codec,
+		Tracker:  best.client.Name(),
+		Title:    best.torrent.Title,
+		TopicURL: best.torrent.TopicURL,
+		Size:     best.torrent.SizeBytes,
+		Quality:  best.torrent.Quality,
+		Codec:    best.torrent.Codec,
 	}
 	if err := p.store.MarkFound(ctx, request.ID, result); err != nil {
 		logger.Error("could not record found result", "err", err)
 		return
 	}
 	logger.Info("selected release",
-		"title", best.Title,
-		"quality", best.Quality,
-		"codec", best.Codec,
-		"candidates", len(torrents),
+		"tracker", result.Tracker,
+		"title", result.Title,
+		"quality", result.Quality,
+		"codec", result.Codec,
+		"candidates", len(candidates),
 	)
 
-	path, err := p.tracker.Download(taskCtx, best, p.cfg.TorrentFilesDir, request.ID)
+	path, err := best.client.Download(taskCtx, best.torrent, p.cfg.TorrentFilesDir, request.ID)
 	if err != nil {
 		p.handleError(ctx, logger, request, err, "download")
 		return
@@ -179,6 +202,92 @@ func (p *Pool) process(ctx context.Context, logger *slog.Logger, request storage
 		return
 	}
 	logger.Info("saved torrent file", "path", path)
+}
+
+// trackerFailure is one tracker's reason for contributing no candidates.
+type trackerFailure struct {
+	tracker string
+	err     error
+}
+
+// searchAll queries every tracker concurrently and returns the merged
+// candidates, best first, alongside the trackers that produced nothing.
+//
+// Each client has its own rate limiter and cookie session, so there is nothing
+// shared to serialise here; the fan-out costs one goroutine per tracker.
+func (p *Pool) searchAll(ctx context.Context, query string) ([]candidate, []trackerFailure) {
+	type outcome struct {
+		torrents []tracker.Torrent
+		err      error
+	}
+
+	outcomes := make([]outcome, len(p.trackers))
+
+	var wg sync.WaitGroup
+	for i, client := range p.trackers {
+		wg.Go(func() {
+			torrents, err := client.Search(ctx, query)
+			outcomes[i] = outcome{torrents: torrents, err: err}
+		})
+	}
+	wg.Wait()
+
+	var (
+		candidates []candidate
+		failures   []trackerFailure
+	)
+	for i, client := range p.trackers {
+		if outcomes[i].err != nil {
+			failures = append(failures, trackerFailure{tracker: client.Name(), err: outcomes[i].err})
+			continue
+		}
+		for _, torrent := range outcomes[i].torrents {
+			candidates = append(candidates, candidate{client: client, torrent: torrent})
+		}
+	}
+
+	// Stable, so equally ranked candidates keep configuration order and the
+	// winner does not change between two runs of the same search.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return media.Better(rank(candidates[i]), rank(candidates[j]))
+	})
+
+	return candidates, failures
+}
+
+func rank(c candidate) media.Ranked {
+	return media.Ranked{Attributes: c.torrent.Attributes, Priority: c.client.Priority()}
+}
+
+// combineFailures reduces the per-tracker errors to the single error the retry
+// policy acts on. Silence from every tracker is an answer (NOT_FOUND); one
+// tracker failing in a retryable way makes the whole attempt retryable, because
+// that tracker may have been holding the better release.
+func combineFailures(failures []trackerFailure) error {
+	var (
+		messages  []string
+		transient bool
+	)
+
+	for _, failure := range failures {
+		if errors.Is(failure.err, tracker.ErrNoResults) {
+			continue
+		}
+		messages = append(messages, failure.tracker+": "+failure.err.Error())
+		if tracker.IsTransient(failure.err) {
+			transient = true
+		}
+	}
+
+	if len(messages) == 0 {
+		return tracker.ErrNoResults
+	}
+
+	err := fmt.Errorf("every tracker failed: %s", strings.Join(messages, "; "))
+	if transient {
+		return tracker.Transient(err)
+	}
+	return err
 }
 
 // handleError maps a pipeline failure onto the right terminal or retry state.

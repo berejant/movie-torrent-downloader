@@ -259,6 +259,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 				return "busy"
 			}
 		},
+		"joinNames":    func(names []string) string { return strings.Join(names, ", ") },
 		"canCancel":    func(status storage.Status) bool { return status.Cancellable() },
 		"canRetry":     func(status storage.Status) bool { return status.Retryable() },
 		"baseName":     filepath.Base,

@@ -28,7 +28,8 @@ type tableData struct {
 	Notice   string
 	Problem  string
 	MaxLines int
-	Tracker  string
+	// Trackers are the configured tracker names, in priority order.
+	Trackers []string
 }
 
 func (s *Server) handleIndex(c echo.Context) error {
@@ -72,7 +73,6 @@ func (s *Server) handleCreateBatch(c echo.Context) error {
 
 	created, err := s.store.CreateBatch(
 		c.Request().Context(),
-		s.cfg.Tracker.Name,
 		items,
 		s.cfg.DuplicateCheckEnabled,
 	)
@@ -350,6 +350,6 @@ func (s *Server) loadTable(c echo.Context, notice, problem string) (tableData, e
 		Notice:   notice,
 		Problem:  problem,
 		MaxLines: s.cfg.BatchMaxLines,
-		Tracker:  s.cfg.Tracker.Name,
+		Trackers: s.cfg.TrackerNamesList(),
 	}, nil
 }

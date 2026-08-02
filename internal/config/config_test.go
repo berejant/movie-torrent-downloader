@@ -1,0 +1,184 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+// baseEnv sets the variables every configuration needs, so each test only has
+// to declare the tracker layout it is actually about.
+func baseEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("TORRENT_FILES_DIR", t.TempDir())
+	t.Setenv("DB_PATH", t.TempDir()+"/app.db")
+}
+
+func TestLoadMultipleTrackers(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka, mazepa")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+	t.Setenv("TRACKER_TOLOKA_PRIORITY", "1")
+	t.Setenv("TRACKER_MAZEPA_LOGIN", "tester")
+	t.Setenv("TRACKER_MAZEPA_PASSWORD", "secret")
+	t.Setenv("TRACKER_MAZEPA_PRIORITY", "2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Trackers) != 2 {
+		t.Fatalf("loaded %d trackers, want 2", len(cfg.Trackers))
+	}
+
+	// Configuration order is preserved: it is the order the UI lists and the
+	// tie-break order of equally ranked candidates.
+	toloka, mazepa := cfg.Trackers[0], cfg.Trackers[1]
+	if toloka.Name != "toloka" || mazepa.Name != "mazepa" {
+		t.Fatalf("names = %q, %q; want toloka, mazepa", toloka.Name, mazepa.Name)
+	}
+
+	// The slug names the preset, so neither tracker needs a PRESET variable.
+	if toloka.Preset != "toloka" || mazepa.Preset != "mazepa" {
+		t.Errorf("presets = %q, %q; want toloka, mazepa", toloka.Preset, mazepa.Preset)
+	}
+	if toloka.BaseURL != "https://toloka.to" {
+		t.Errorf("toloka base url = %q, want the preset default", toloka.BaseURL)
+	}
+	if mazepa.BaseURL != "https://mazepa.to" {
+		t.Errorf("mazepa base url = %q, want the preset default", mazepa.BaseURL)
+	}
+
+	// The engines differ where it matters: the size column and the row selector.
+	if toloka.Options.SizeCellIndex != 6 {
+		t.Errorf("toloka size cell = %d, want 6", toloka.Options.SizeCellIndex)
+	}
+	if mazepa.Options.SizeCellIndex != 5 {
+		t.Errorf("mazepa size cell = %d, want 5", mazepa.Options.SizeCellIndex)
+	}
+	if toloka.Options.LoginUsernameField != "username" || mazepa.Options.LoginUsernameField != "login_username" {
+		t.Errorf("login fields = %q, %q", toloka.Options.LoginUsernameField, mazepa.Options.LoginUsernameField)
+	}
+	if toloka.Priority != 1 || mazepa.Priority != 2 {
+		t.Errorf("priorities = %d, %d; want 1, 2", toloka.Priority, mazepa.Priority)
+	}
+}
+
+// The legacy layout — one tracker on unprefixed TRACKER_* variables — has to
+// keep working, because it is what every existing .env file looks like.
+func TestLoadLegacySingleTracker(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKER_NAME", "mazepa")
+	t.Setenv("TRACKER_BASE_URL", "https://mazepa.to")
+	t.Setenv("TRACKER_LOGIN", "tester")
+	t.Setenv("TRACKER_PASSWORD", "secret")
+	t.Setenv("TRACKER_WORKERS", "7")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Trackers) != 1 {
+		t.Fatalf("loaded %d trackers, want 1", len(cfg.Trackers))
+	}
+	if cfg.Trackers[0].Name != "mazepa" || cfg.Trackers[0].Preset != "mazepa" {
+		t.Errorf("tracker = %q/%q, want mazepa/mazepa", cfg.Trackers[0].Name, cfg.Trackers[0].Preset)
+	}
+	// TRACKER_WORKERS used to size the pool; it still does while WORKERS is
+	// unset, so an existing deployment keeps its concurrency.
+	if cfg.Workers != 7 {
+		t.Errorf("workers = %d, want the legacy TRACKER_WORKERS value 7", cfg.Workers)
+	}
+}
+
+func TestLoadExtraOptionsOverridePresetPerTracker(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "one,two")
+	t.Setenv("TRACKER_ONE_PRESET", "torrentpier")
+	t.Setenv("TRACKER_ONE_BASE_URL", "https://one.example")
+	t.Setenv("TRACKER_ONE_LOGIN", "tester")
+	t.Setenv("TRACKER_ONE_PASSWORD", "secret")
+	t.Setenv("TRACKER_ONE_EXTRA_OPTIONS", `{"size_cell_index":9,"login_extra_fields":{"autologin":"1"}}`)
+	t.Setenv("TRACKER_TWO_PRESET", "torrentpier")
+	t.Setenv("TRACKER_TWO_BASE_URL", "https://two.example")
+	t.Setenv("TRACKER_TWO_LOGIN", "tester")
+	t.Setenv("TRACKER_TWO_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	one, two := cfg.Trackers[0], cfg.Trackers[1]
+	if one.Options.SizeCellIndex != 9 {
+		t.Errorf("overridden size cell = %d, want 9", one.Options.SizeCellIndex)
+	}
+	// Keys the operator did not mention keep the preset's value.
+	if one.Options.ResultRowSelector != DefaultTrackerOptions().ResultRowSelector {
+		t.Errorf("row selector = %q, want the preset value", one.Options.ResultRowSelector)
+	}
+	// Both trackers share a preset, so an override that wrote through the
+	// shared profile would show up on the other one.
+	if two.Options.SizeCellIndex != 5 {
+		t.Errorf("second tracker size cell = %d, want the untouched preset value 5", two.Options.SizeCellIndex)
+	}
+	if len(two.Options.LoginExtraFields) != 0 {
+		t.Errorf("second tracker inherited login fields %v from the first", two.Options.LoginExtraFields)
+	}
+}
+
+func TestLoadRejectsBadTrackerLists(t *testing.T) {
+	t.Run("unknown preset", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TRACKERS", "custom")
+		t.Setenv("TRACKER_CUSTOM_PRESET", "nosuchengine")
+		t.Setenv("TRACKER_CUSTOM_BASE_URL", "https://custom.example")
+		t.Setenv("TRACKER_CUSTOM_LOGIN", "tester")
+		t.Setenv("TRACKER_CUSTOM_PASSWORD", "secret")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "TRACKER_CUSTOM_PRESET") {
+			t.Fatalf("error = %v, want it to name TRACKER_CUSTOM_PRESET", err)
+		}
+	})
+
+	t.Run("duplicate slug", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TRACKERS", "toloka,toloka")
+		t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+		t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "more than once") {
+			t.Fatalf("error = %v, want a duplicate-slug rejection", err)
+		}
+	})
+
+	t.Run("missing credentials name the prefixed variable", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TRACKERS", "toloka")
+		t.Setenv("TRACKER_TOLOKA_LOGIN", "")
+		t.Setenv("TRACKER_TOLOKA_PASSWORD", "")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "TRACKER_TOLOKA_LOGIN") {
+			t.Fatalf("error = %v, want it to name TRACKER_TOLOKA_LOGIN", err)
+		}
+	})
+
+	// A preset that describes an engine rather than a site supplies no base
+	// URL, so the operator has to.
+	t.Run("engine preset without base url", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TRACKERS", "custom")
+		t.Setenv("TRACKER_CUSTOM_LOGIN", "tester")
+		t.Setenv("TRACKER_CUSTOM_PASSWORD", "secret")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "TRACKER_CUSTOM_BASE_URL") {
+			t.Fatalf("error = %v, want it to name TRACKER_CUSTOM_BASE_URL", err)
+		}
+	})
+}

@@ -159,6 +159,13 @@ small {
     font-size: 0.72rem;
 }
 
+/* The tracker a result came from leads the tag row, so a scan down the column
+   shows at a glance which source is winning. */
+.tag.tracker {
+    border-color: var(--pico-primary);
+    color: var(--pico-primary);
+}
+
 .actions {
     white-space: nowrap;
 }

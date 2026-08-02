@@ -121,21 +121,23 @@ func codecRank(codec string) int {
 
 // Better reports whether a ranks above b.
 //
-// Precedence is strict: tracker priority, then quality tier, then codec, then
-// larger size. Seeder counts are deliberately ignored — results are frequently
-// cross-posted between trackers with stale or invented swarm numbers.
+// Precedence is strict: quality tier, then codec, then tracker priority, then
+// larger size. The picture wins over its source — a 2160p release on the
+// second-choice tracker beats a 1080p one on the first — and tracker priority
+// only separates candidates that are otherwise equally good. Seeder counts are
+// deliberately ignored: results are frequently cross-posted between trackers
+// with stale or invented swarm numbers.
 //
 // Callers must use a stable sort so equal candidates keep tracker order.
 func Better(a, b Ranked) bool {
-	if a.Priority != b.Priority {
-		return a.Priority < b.Priority // lower priority value wins
-	}
-
 	if ra, rb := qualityRank(a.Quality), qualityRank(b.Quality); ra != rb {
 		return ra > rb
 	}
 	if ra, rb := codecRank(a.Codec), codecRank(b.Codec); ra != rb {
 		return ra > rb
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority // lower priority value wins
 	}
 	return a.SizeBytes > b.SizeBytes
 }
@@ -143,8 +145,8 @@ func Better(a, b Ranked) bool {
 // Ranked is the minimal view of a candidate needed to order it.
 type Ranked struct {
 	Attributes
-	// Priority is the tracker priority; lower wins. With a single tracker it
-	// is constant and therefore inert.
+	// Priority is the tracker priority; lower wins. It decides between equally
+	// good releases found on different trackers.
 	Priority int
 }
 

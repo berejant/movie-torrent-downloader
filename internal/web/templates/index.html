@@ -17,7 +17,7 @@
 <body>
 <header>
     <h1>Movie Torrent Downloader</h1>
-    <p>Searching <strong>{{ .Tracker }}</strong> — up to {{ .MaxLines }} titles per batch.</p>
+    <p>Searching <strong>{{ joinNames .Trackers }}</strong> — up to {{ .MaxLines }} titles per batch.</p>
 </header>
 
 <main>

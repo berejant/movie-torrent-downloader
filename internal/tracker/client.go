@@ -245,6 +245,15 @@ func (c *Client) performLogin(ctx context.Context) error {
 	if c.options.LoginSubmitField != "" {
 		form.Set(c.options.LoginSubmitField, c.options.LoginSubmitValue)
 	}
+	// Checkboxes and hidden inputs the tracker's own form submits, such as
+	// toloka's autologin. Set last so a preset cannot silently overwrite the
+	// credentials.
+	for field, value := range c.options.LoginExtraFields {
+		if field == c.options.LoginUsernameField || field == c.options.LoginPasswordField {
+			continue
+		}
+		form.Set(field, value)
+	}
 
 	resp, err := c.do(ctx, http.MethodPost, loginURL, strings.NewReader(form.Encode()), kindForm, loginURL)
 	if err != nil {

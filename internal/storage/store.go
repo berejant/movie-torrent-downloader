@@ -47,7 +47,12 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_status     ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_normalized ON requests(normalized_query);
 CREATE INDEX IF NOT EXISTS idx_requests_created    ON requests(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_requests_claim      ON requests(tracker, status, next_attempt_at);
+
+-- The claim index used to lead with tracker, from when a request belonged to
+-- one tracker and each pool claimed its own rows. A request is now searched on
+-- every tracker, so the queue is global and the old index cannot serve it.
+DROP INDEX IF EXISTS idx_requests_claim;
+CREATE INDEX IF NOT EXISTS idx_requests_queue      ON requests(status, next_attempt_at, created_at);
 `
 
 const columns = `id, batch_id, tracker, raw_title, query, normalized_query, status,
@@ -108,7 +113,6 @@ func NewID() string {
 // overrides it for that line.
 func (s *Store) CreateBatch(
 	ctx context.Context,
-	tracker string,
 	items []NewRequest,
 	checkDuplicates bool,
 ) ([]Request, error) {
@@ -128,9 +132,10 @@ func (s *Store) CreateBatch(
 
 	for _, item := range items {
 		request := Request{
-			ID:              NewID(),
-			BatchID:         batchID,
-			Tracker:         tracker,
+			ID:      NewID(),
+			BatchID: batchID,
+			// Tracker is filled in at MarkFound with whichever tracker won the
+			// search; a queued request belongs to no single tracker.
 			RawTitle:        item.RawTitle,
 			Query:           item.Query,
 			NormalizedQuery: item.NormalizedQuery,
@@ -208,7 +213,10 @@ func insert(ctx context.Context, tx *sql.Tx, r Request) error {
 
 // ClaimNext atomically moves the oldest due QUEUED request to SEARCHING and
 // returns it. ok is false when nothing is due.
-func (s *Store) ClaimNext(ctx context.Context, tracker string) (Request, bool, error) {
+//
+// The queue is global: one worker takes a request and searches every tracker
+// for it, so there is nothing to filter on here.
+func (s *Store) ClaimNext(ctx context.Context) (Request, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Request{}, false, fmt.Errorf("storage: begin claim: %w", err)
@@ -218,11 +226,11 @@ func (s *Store) ClaimNext(ctx context.Context, tracker string) (Request, bool, e
 	now := s.now()
 	row := tx.QueryRowContext(ctx,
 		`SELECT `+columns+` FROM requests
-		 WHERE tracker = ? AND status = ?
+		 WHERE status = ?
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		 ORDER BY created_at
 		 LIMIT 1`,
-		tracker, string(StatusQueued), now.Unix(),
+		string(StatusQueued), now.Unix(),
 	)
 
 	request, err := scanRequest(row)
@@ -251,14 +259,15 @@ func (s *Store) ClaimNext(ctx context.Context, tracker string) (Request, bool, e
 	return request, true, nil
 }
 
-// MarkFound records the selected release before the file is fetched.
+// MarkFound records the selected release, and the tracker it came from, before
+// the file is fetched.
 func (s *Store) MarkFound(ctx context.Context, id string, result Result) error {
 	return s.exec(ctx,
 		`UPDATE requests
-		 SET status = ?, result_title = ?, result_topic_url = ?, result_size = ?,
+		 SET status = ?, tracker = ?, result_title = ?, result_topic_url = ?, result_size = ?,
 		     result_quality = ?, result_codec = ?, last_error = '', updated_at = ?
 		 WHERE id = ?`,
-		string(StatusFound), result.Title, result.TopicURL, result.Size,
+		string(StatusFound), result.Tracker, result.Title, result.TopicURL, result.Size,
 		result.Quality, result.Codec, s.now().Unix(), id,
 	)
 }

@@ -52,15 +52,19 @@ func run() error {
 	}
 	defer func() { _ = store.Close() }()
 
-	client, err := tracker.New(cfg.Tracker, logger)
-	if err != nil {
-		return err
+	clients := make([]*tracker.Client, 0, len(cfg.Trackers))
+	for _, trackerCfg := range cfg.Trackers {
+		client, err := tracker.New(trackerCfg, logger)
+		if err != nil {
+			return err
+		}
+		clients = append(clients, client)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool := worker.New(store, client, cfg, logger)
+	pool := worker.New(store, clients, cfg, logger)
 	if err := pool.Recover(ctx); err != nil {
 		return err
 	}

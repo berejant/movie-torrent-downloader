@@ -58,6 +58,9 @@ func (s Status) Retryable() bool {
 type Request struct {
 	ID      string
 	BatchID string
+	// Tracker is the tracker the selected release came from. It is empty until
+	// the request reaches FOUND: every tracker is searched, and only the winner
+	// is recorded.
 	Tracker string
 
 	// RawTitle is the operator's original input line, kept verbatim.
@@ -91,6 +94,8 @@ type Request struct {
 
 // Result carries the tracker metadata of a selected release.
 type Result struct {
+	// Tracker is the name of the tracker that won the search.
+	Tracker  string
 	Title    string
 	TopicURL string
 	Size     int64

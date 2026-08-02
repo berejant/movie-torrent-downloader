@@ -1,8 +1,8 @@
 # Movie Torrent Downloader
 
-Searches a torrent tracker for a list of movie titles and saves the matching
-`.torrent` files to a directory a download client watches. It never downloads
-the movies themselves.
+Searches one or more torrent trackers for a list of movie titles and saves the
+matching `.torrent` files to a directory a download client watches. It never
+downloads the movies themselves.
 
 Built for Synology Docker, but nothing in it is Synology-specific.
 
@@ -12,21 +12,54 @@ See [AGENTS.md](AGENTS.md) for the full specification.
 
 1. You paste a list of movie titles into a web form (one per line).
 2. Each line becomes a queued request.
-3. Five workers search the tracker, pick the best release and save its
-   `.torrent` file as `<title>-<tracker>-<quality>-<requestID>.torrent`.
+3. Five workers take the requests. Each one searches **every configured tracker
+   in parallel**, ranks the merged results, and saves the winner's `.torrent`
+   file as `<title>-<tracker>-<quality>-<requestID>.torrent`.
 4. The job table shows every request until it reaches a terminal state, with
    retry, edit-query, force, cancel and remove actions.
 
 Release selection is deterministic: **quality tier** (`2160p` > `1080p` >
-`720p` > `sd`), then **codec** (H.265 > H.264), then **larger file**. Seeder
-counts are ignored on purpose — cross-posted results carry unreliable swarm
-numbers.
+`720p` > `sd`), then **codec** (H.265 > H.264), then **tracker priority**, then
+**larger file**. The picture wins over its source — a 2160p release on the
+second-choice tracker beats a 1080p one on the first — and priority only
+separates candidates that are otherwise equal. Seeder counts are ignored on
+purpose: cross-posted results carry unreliable swarm numbers.
+
+A tracker that is unreachable does not hold back a release another tracker
+found; the failure is logged and the remaining results are ranked as usual.
+
+## Supported trackers
+
+Trackers are configured by slug, and each slug carries a **preset**: the paths,
+form fields, selectors and column layout of that site. Adding a supported
+tracker means listing its slug and supplying credentials.
+
+| Preset | Site | Notes |
+|---|---|---|
+| `toloka` | toloka.to | phpBB2 engine; search requires a session |
+| `mazepa` | mazepa.to | TorrentPier |
+| `torrentpier` | — | the generic engine, for any other TorrentPier install |
+
+```sh
+TRACKERS=toloka,mazepa
+TRACKER_TOLOKA_LOGIN=…
+TRACKER_TOLOKA_PASSWORD=…
+TRACKER_TOLOKA_PRIORITY=1
+TRACKER_MAZEPA_LOGIN=…
+TRACKER_MAZEPA_PASSWORD=…
+TRACKER_MAZEPA_PRIORITY=2
+```
+
+Any preset value can be corrected without a code change via
+`TRACKER_<SLUG>_EXTRA_OPTIONS` (see `.env.example`). Leaving `TRACKERS` unset
+falls back to the legacy single-tracker layout on unprefixed `TRACKER_*`
+variables, so an existing `.env` keeps working.
 
 ## Quick start (Docker Compose)
 
 ```sh
 cp .env.example .env
-# set TRACKER_LOGIN / TRACKER_PASSWORD, and PUID/PGID to the owner of your shares
+# set the tracker credentials, and PUID/PGID to the owner of your shares
 docker compose up -d
 ```
 
@@ -100,11 +133,13 @@ the annotated list. The ones that matter most:
 | Variable | Default | Purpose |
 |---|---|---|
 | `TORRENT_FILES_DIR` | *required* | where `.torrent` files are written |
-| `TRACKER_BASE_URL` | *required* | tracker root URL |
-| `TRACKER_LOGIN` / `TRACKER_PASSWORD` | *required* | tracker credentials |
+| `TRACKERS` | unset | comma-separated tracker slugs; unset = legacy single tracker |
+| `TRACKER_<SLUG>_LOGIN` / `_PASSWORD` | *required* | that tracker's credentials |
+| `TRACKER_<SLUG>_PRIORITY` | `1` | lower wins; breaks ties between equal releases |
+| `TRACKER_<SLUG>_BASE_URL` | from preset | tracker root URL |
 | `DB_PATH` | `/data/app.db` | SQLite file |
-| `TRACKER_WORKERS` | `5` | concurrent workers |
-| `TRACKER_RPS` | `1` | shared request rate across all workers |
+| `WORKERS` | `5` | requests searched at once, across all trackers |
+| `TRACKER_<SLUG>_RPS` | `1` | request rate for that tracker |
 | `AUTH_USER` / `AUTH_PASSWORD` | unset | enables basic auth when both are set |
 | `PUID` / `PGID` | `1000` | container user, must own the mounts |
 
@@ -136,12 +171,20 @@ not restart the container.
 
 ## Troubleshooting
 
-**Nothing is found and every request fails.** The parser targets TorrentPier's
-table layout. If the tracker changes its markup, override the selectors with
-`TRACKER_EXTRA_OPTIONS` (see `.env.example`) rather than editing code.
+**Nothing is found and every request fails.** Each preset targets one table
+layout. If a tracker changes its markup, override the selectors with
+`TRACKER_<SLUG>_EXTRA_OPTIONS` (see `.env.example`) rather than editing code.
+Saved copies of the pages the presets were written against live in
+`html-examples/`, and the parser tests run against them.
+
+**One tracker stopped contributing.** Look for `tracker unavailable, ranking the
+remaining results` in the logs: results from the other trackers are still used,
+so requests keep completing while one source is broken.
 
 **Permission denied writing torrents.** `PUID`/`PGID` do not match the share
 owner. `/health/ready` reports this directly.
 
 **Login fails.** Check the credentials first; if they are right, the login form
-field names may have changed — they are overridable in `TRACKER_EXTRA_OPTIONS`.
+field names may have changed — they are overridable in
+`TRACKER_<SLUG>_EXTRA_OPTIONS`, including any extra checkbox the form submits
+(`login_extra_fields`).

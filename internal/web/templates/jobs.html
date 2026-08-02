@@ -84,6 +84,8 @@
                         {{ with .ResultTitle }}<div class="match">{{ . }}</div>{{ end }}
                         {{ if .ResultQuality }}
                             <small class="tags">
+                                {{/* The tracker that won the search across all of them. */}}
+                                {{ with .Tracker }}<span class="tag tracker">{{ . }}</span>{{ end }}
                                 <span class="tag">{{ .ResultQuality }}</span>
                                 {{ if .ResultCodec }}<span class="tag">{{ .ResultCodec }}</span>{{ end }}
                                 {{ with humanSize .ResultSize }}<span class="tag">{{ . }}</span>{{ end }}

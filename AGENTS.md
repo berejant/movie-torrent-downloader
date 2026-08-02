@@ -3,7 +3,7 @@
 ## Project: Movie Torrent Downloader
 
 ### Goal
-Build a utility service that searches torrent files for movies on a configured tracker and saves `.torrent` files for later use.
+Build a utility service that searches torrent files for movies across the configured trackers and saves `.torrent` files for later use.
 
 The service must run in Docker (primary target: Synology Docker), while remaining platform-agnostic.
 
@@ -34,12 +34,23 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
 ## Core Requirements
 
 ### 1) Tracker Search Utility
-- Find torrent files for movie titles from a configured torrent tracker.
+- Find torrent files for movie titles from the configured torrent trackers.
 - Support tracker-specific auth and request options.
 - Save selected `.torrent` files to a configured directory.
-- **MVP ships a single tracker: `mazepa.to`.** The code must sit behind a `Tracker` interface with a configured priority value so additional trackers (rutracker, etc.) can be added later without restructuring, but only one is wired up now.
+- **Every configured tracker is searched for every request**, concurrently, and the best release across all of them wins. One request is one unit of work: the queue is global, not per tracker, and only the winning tracker is recorded on the request.
+- A tracker that fails does **not** hold back a release another tracker found: the failure is logged and the remaining candidates are ranked as usual. Only when no tracker produced a candidate does the failure reach the retry policy — retryable if any tracker failed in a retryable way, `NOT_FOUND` when every tracker simply had nothing.
 
-**mazepa.to runs TorrentPier** (confirmed). The row parser targets the TorrentPier tracker-table column layout: publish, status, forum, topic, author, size/download-link, seeders, leechers, replies, added.
+**Presets, not per-tracker code.** A tracker is described by a `Preset` in `internal/config/presets.go` — paths, form fields, session selectors, row/topic/download/forum selectors and the size column index. The parser is preset-driven, so adding a tracker means adding a preset, not a code path. Shipped presets:
+
+| Preset | Site | Engine | Result columns |
+|---|---|---|---|
+| `mazepa` | mazepa.to | TorrentPier | publish, status, forum, topic, author, **size/download**, seeders, leechers, replies, added |
+| `torrentpier` | — | TorrentPier | same as above; for any other install |
+| `toloka` | toloka.to | phpBB2-derived | icon, forum, topic, author, checked, download, **size**, status, completed, seeders, leechers, replies, added |
+
+toloka specifics worth knowing: search results are gated behind a session (an anonymous visitor gets the table chrome and zero rows); relative hrefs carry no leading slash (`download.php?id=…`), so they only resolve against the search page URL; the logged-in header links `/login.php?logout=true`, so the register link — not a login link — is what distinguishes the two session states; and the login form ticks `autologin`, which the client posts via `login_extra_fields`.
+
+Saved pages from both trackers live in `html-examples/<slug>/`, and the parser tests run against them, so a markup change can be diagnosed against the same input the parser saw.
 
 ### 2) Docker-First Runtime
 - Must run as a containerized app.
@@ -61,22 +72,30 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
 | `BATCH_MAX_LINES` | `100` | max movie titles per batch submission |
 | `AUTH_USER` / `AUTH_PASSWORD` | unset | HTTP Basic auth for UI + API. Enabled **only when both are set**; unset means no auth (LAN-only deployments) |
 
-#### Tracker (prefix `TRACKER_`)
+#### Trackers (prefix `TRACKER_<SLUG>_`)
+
+`TRACKERS` is a comma-separated list of tracker slugs, in configuration order. Every listed tracker is searched for every request. Each slug also selects a **preset** — the paths, form fields, selectors and column layout of that site — so adding a supported tracker needs nothing but credentials.
+
 | Variable | Default | Notes |
 |---|---|---|
-| `TRACKER_NAME` | `mazepa` | short slug, used in saved filenames |
-| `TRACKER_BASE_URL` | — | **required** |
-| `TRACKER_LOGIN` | — | **required** |
-| `TRACKER_PASSWORD` | — | **required** |
-| `TRACKER_PRIORITY` | `1` | lower wins when multiple trackers exist (future use) |
-| `TRACKER_TIMEOUT_SECONDS` | `30` | per-request timeout |
-| `TRACKER_WORKERS` | `5` | concurrent workers for this tracker |
-| `TRACKER_RPS` | `1` | shared rate limit across all workers of this tracker |
-| `TRACKER_MAX_SIZE_BYTES` | `0` | `0` = unlimited |
-| `TRACKER_USER_AGENT` | real browser UA (see below) | overridable |
-| `TRACKER_EXTRA_OPTIONS` | unset | JSON object of tracker-specific knobs (see below) |
+| `TRACKERS` | unset | e.g. `toloka,mazepa`; unset selects the legacy layout below |
+| `WORKERS` | `5` | requests searched at once, across all trackers |
+| `TRACKER_<SLUG>_PRESET` | the slug, else `torrentpier` | `toloka` \| `mazepa` \| `torrentpier` |
+| `TRACKER_<SLUG>_BASE_URL` | from the preset | required when the preset names no site |
+| `TRACKER_<SLUG>_LOGIN` | — | **required** |
+| `TRACKER_<SLUG>_PASSWORD` | — | **required** |
+| `TRACKER_<SLUG>_PRIORITY` | `1` | lower wins; only breaks ties between equal releases |
+| `TRACKER_<SLUG>_TIMEOUT_SECONDS` | `30` | per-request timeout |
+| `TRACKER_<SLUG>_RPS` | `1` | rate limit for this tracker, shared by all workers |
+| `TRACKER_<SLUG>_MAX_SIZE_BYTES` | `0` | `0` = unlimited |
+| `TRACKER_<SLUG>_USER_AGENT` | real browser UA (see below) | overridable |
+| `TRACKER_<SLUG>_EXTRA_OPTIONS` | unset | JSON object merged over the preset (see below) |
 
-`TRACKER_EXTRA_OPTIONS` is a JSON object; every key is optional and falls back to the TorrentPier defaults:
+The slug is the tracker's identity: it picks the variables, the preset, and the tracker token in saved filenames.
+
+**Legacy layout.** With `TRACKERS` unset, one tracker is configured on the unprefixed variables (`TRACKER_NAME`, `TRACKER_BASE_URL`, `TRACKER_LOGIN`, `TRACKER_PASSWORD`, `TRACKER_PRIORITY`, `TRACKER_TIMEOUT_SECONDS`, `TRACKER_RPS`, `TRACKER_MAX_SIZE_BYTES`, `TRACKER_USER_AGENT`, `TRACKER_EXTRA_OPTIONS`), and `TRACKER_WORKERS` still sizes the pool while `WORKERS` is unset. Existing deployments therefore keep working untouched.
+
+`TRACKER_<SLUG>_EXTRA_OPTIONS` is a JSON object merged over the preset key by key; every key is optional. The `mazepa`/`torrentpier` preset spelled out:
 
 ```json
 {
@@ -97,7 +116,29 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
 }
 ```
 
-`size_cell_index` is the zero-based `<td>` holding the size and the download link; set it to `-1` to skip the direct lookup and scan the whole row for the first cell that parses as a size.
+...and the `toloka` preset:
+
+```json
+{
+  "tracker_path": "/tracker.php",
+  "login_path": "/login.php",
+  "login_username_field": "username",
+  "login_password_field": "password",
+  "login_submit_field": "login",
+  "login_submit_value": "Вхід",
+  "login_extra_fields": {"autologin": "1"},
+  "search_query_field": "nm",
+  "logged_in_selector": "a[href*='logout']",
+  "logged_out_selector": "a[href*='mode=register']",
+  "result_row_selector": "table.forumline tr.prow1, table.forumline tr.prow2",
+  "topic_link_selector": "td.topictitle a",
+  "download_link_selector": "a[href*='download.php?id=']",
+  "forum_link_selector": "a[href*='tracker.php?f=']",
+  "size_cell_index": 6
+}
+```
+
+`size_cell_index` is the zero-based `<td>` holding the size; set it to `-1` to skip the direct lookup and scan the whole row for the first cell that parses as a size. `login_extra_fields` are additional form fields posted with the credentials — toloka's login form ticks `autologin` by default, and without it the session cookie expires with the browser session.
 
 #### Retry
 | Variable | Default |
@@ -194,12 +235,14 @@ The normalized query is used for duplicate detection and is derived as:
 #### Matching policy
 Selection is deterministic and **ignores seeders entirely** — results are frequently cross-posted from other trackers with wrong or stale swarm counts. There is **no minimum-seeders filter** and **no language preference**; tracker priority replaces language ranking.
 
-Candidates are ordered by, in strict precedence:
-1. **Tracker priority** (`TRACKER_PRIORITY`, lower first) — single tracker in MVP, so inert for now
-2. **Quality tier** — `2160p` > `1080p` > `720p` > `sd`
-3. **Codec** — H.265/HEVC > H.264/AVC > anything else (better compression at equal size)
-4. **Larger `SizeBytes`** (proxy for bitrate, still bounded by `TRACKER_MAX_SIZE_BYTES`)
+Candidates from **all trackers are merged into one list** and ordered by, in strict precedence:
+1. **Quality tier** — `2160p` > `1080p` > `720p` > `sd`
+2. **Codec** — H.265/HEVC > H.264/AVC > anything else (better compression at equal size)
+3. **Tracker priority** (`TRACKER_<SLUG>_PRIORITY`, lower first)
+4. **Larger `SizeBytes`** (proxy for bitrate, still bounded by `TRACKER_<SLUG>_MAX_SIZE_BYTES`)
 5. **First-seen order** (stable sort, so ties are reproducible)
+
+The picture wins over its source: a 2160p release on the second-choice tracker beats a 1080p one on the first, and tracker priority only separates candidates that are otherwise equally good. Priority does outrank size, so a smaller release on the preferred tracker wins at equal quality and codec.
 
 **Canonical quality token** — parsed from the release title and normalized, because it is embedded in the saved filename:
 
@@ -224,16 +267,16 @@ e.g. `dune part two-mazepa-2160p-01JQ8X4M7ZK3RN.torrent`
   Сікаріо 2 / Sicario: Day of the Soldado (2018) UHD BDRemux 4K 2160p HDR 2xUkr/Eng | Sub Eng
   -> Сікаріо 2 Sicario Day of the Soldado-mazepa-2160p-01KYYJA6CMF8N3Q77NAM0VJ4DQ.torrent
   ```
-- `<tracker>` is `TRACKER_NAME`.
+- `<tracker>` is the slug of the tracker the release was downloaded from — the winner of the cross-tracker ranking, not a fixed value.
 - `<requestID>` is the task's ULID — sortable, filename-safe, and **guarantees one file per task**, so removing a task never deletes another task's file.
 - Write to a temp file in the same directory, then `os.Rename` into place.
 - Deletion on task removal must verify the resolved path is inside `TORRENT_FILES_DIR` before unlinking.
 
 ### 7) Concurrency and Rate Limiting
-- **Up to 5 workers per tracker** (`TRACKER_WORKERS`).
-- All workers of a tracker share **one rate limiter** (token bucket at `TRACKER_RPS`) and **one cookie session**. The limiter, not per-request sleeps, is what protects the tracker.
-- The tracker client must **not** hold a global mutex across search/download — that would serialize the 5 workers into 1. Only session establishment is guarded, via singleflight, so five workers hitting an expired session trigger exactly one re-login.
-- Per-request timeout via `TRACKER_TIMEOUT_SECONDS` and `context.Context`.
+- **One shared pool of `WORKERS` workers** (default 5). A worker takes a request and searches every tracker in parallel, so the number is per request in flight, not per tracker.
+- Every tracker has **its own rate limiter** (token bucket at `TRACKER_<SLUG>_RPS`) and **its own cookie session**, shared by all workers. The limiter, not per-request sleeps, is what protects the tracker — and it keeps the fan-out from multiplying load on any one site.
+- The tracker client must **not** hold a global mutex across search/download — that would serialize the workers into 1. Only session establishment is guarded, via singleflight, so several workers hitting an expired session trigger exactly one re-login.
+- Per-request timeout via `TRACKER_<SLUG>_TIMEOUT_SECONDS` and `context.Context`; one attempt is bounded by four times the **longest** configured tracker timeout, since the trackers are searched in parallel.
 
 ### 8) Retry Policy
 - Max 5 attempts (`RETRY_MAX_ATTEMPTS`).
@@ -253,7 +296,7 @@ Minimum data to keep:
 - Created/updated timestamps (UTC)
 - Last error (if any)
 - Attempt count, `next_attempt_at`
-- Tracker name
+- Tracker name — the tracker whose release was selected. Empty until `FOUND`: every tracker is searched, so a queued request belongs to none of them.
 - Tracker result metadata (matched torrent name, size, quality token, codec token, topic URL)
 - Saved file path (if downloaded)
 - Batch ID (groups the tasks created by one submission)
@@ -310,22 +353,25 @@ See §7. Configurable worker concurrency, shared per-tracker throttle, per-reque
 - Anti-bot/CAPTCHA bypass strategies are out of scope for now.
 
 ### Testing
-No formal test suite is required for MVP. This is a self-hosted personal tool, validated by manual use; pinning external tracker HTML in fixtures is not worth the upkeep. Pure functions (query normalization, quality/codec parsing, ranking, size parsing) may get lightweight table-driven tests where convenient.
+No formal test suite is required for MVP. This is a self-hosted personal tool, validated by manual use. Pure functions (query normalization, quality/codec parsing, ranking, size parsing) get lightweight table-driven tests where convenient.
+
+Two exceptions earn their upkeep, both added with the second tracker:
+- **Saved tracker pages in `html-examples/<slug>/`.** With more than one preset, the selectors are the thing most likely to be silently wrong, and a real page is the only honest input. The parser tests assert row counts, resolved URLs, sizes and the session selectors against them.
+- **Cross-tracker selection** (`internal/worker`). Fake trackers over `httptest` cover the decisions that only exist once several trackers are searched: quality beating the preferred tracker, priority breaking a tie, a partial failure still downloading, and every tracker failing being retryable rather than `NOT_FOUND`.
 
 ---
 
 ## Suggested Technical Scope (MVP)
 
 ### MVP includes
-- Single tracker integration (`mazepa.to`)
+- Tracker integration (`mazepa.to`, `toloka.to`), preset-driven
 - Batch input UI (htmx, polled table)
-- Queue + 5 workers behind a shared rate limiter
+- Queue + 5 workers, each searching every tracker behind its own rate limiter
 - Persistent status tracking in SQLite with DB-backed retries
 - Save `.torrent` files to configured dir
 - Docker image + env-based config + PUID/PGID
 
 ### Post-MVP (nice to have)
-- Multiple trackers with priority-based fallback
 - JSON API endpoints for automation
 - Notification hooks (email/Telegram/webhook)
 - Manual selection among search results
@@ -338,7 +384,8 @@ No formal test suite is required for MVP. This is a self-hosted personal tool, v
 - Given valid tracker credentials and movie list, user can submit batch request via web UI.
 - Each movie request receives a persisted status transition until terminal state.
 - Duplicate requests are persisted as `DUPLICATE`, with explicit `Force` and edit-query actions to override.
-- Search ranking follows tracker priority → quality (`2160p`/`1080p`/`720p`/`sd`) → codec (H.265 > H.264) → larger size, ignoring seeders.
+- Every configured tracker is searched for each request, and the results are ranked as one list: quality (`2160p`/`1080p`/`720p`/`sd`) → codec (H.265 > H.264) → tracker priority → larger size, ignoring seeders.
+- One tracker being unreachable still yields a download when another tracker has a usable release.
 - For `NOT_FOUND`, user can edit search query and retry from request list.
 - User can cancel a queued task, remove a task, and delete its related `.torrent` file.
 - User can execute batch actions for selected tasks.
@@ -353,4 +400,4 @@ No formal test suite is required for MVP. This is a self-hosted personal tool, v
 - Downloading actual movie content via BitTorrent client.
 - Media library management.
 - Advanced user/role management.
-- Automated tests against live tracker HTML.
+- Automated tests that hit the live trackers over the network. (Tests against **saved** pages in `html-examples/` are in scope — see Testing.)
