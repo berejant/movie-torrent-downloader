@@ -152,6 +152,19 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 |---|---|---|
 | `DUPLICATE_CHECK_ENABLED` | `true` | set `false` to globally disable uniqueness checks |
 
+#### Trakt.tv watchlist (prefix `TRAKT_`)
+| Variable | Default | Notes |
+|---|---|---|
+| `TRAKT_ENABLED` | `false` | when false nothing else here is read or validated |
+| `TRAKT_CLIENT_ID` | — | **required when enabled**, sent as the `trakt-api-key` header |
+| `TRAKT_TOKEN_FILE` | — | **required when enabled**, path to the `Trakt.xml` another application maintains |
+| `TRAKT_BASE_URL` | `https://api.trakt.tv` | override only for a proxy or a test double |
+| `TRAKT_INTERVAL_MINUTES` | `15` | poll period; the first sync runs at startup |
+| `TRAKT_TIMEOUT_SECONDS` | `30` | per-request timeout |
+| `TRAKT_PAGE_LIMIT` | `100` | watchlist page size, max `1000` |
+| `TRAKT_MAX_PAGES` | `10` | pages per run; the remainder follows on the next run |
+| `TRAKT_QUERY_WITH_YEAR` | `true` | search `Extraction 2020` rather than `Extraction` |
+
 Configuration behavior:
 - Validate required env vars on startup.
 - Fail fast with clear error messages if required config is missing/invalid.
@@ -301,6 +314,8 @@ Minimum data to keep:
 - Saved file path (if downloaded)
 - Batch ID (groups the tasks created by one submission)
 
+A second table, `trakt_movies`, records which watchlist movies have already been scheduled (trakt movie id, watchlist entry id, title, year, `listed_at`, the request it produced). See section 10.
+
 Statuses:
 
 | Status | Meaning | Terminal |
@@ -316,6 +331,27 @@ Statuses:
 | `CANCELLED` | cancelled by the operator before it started | yes |
 
 Cancellation: allowed from `NEW` and `QUEUED` only. **In-flight tasks (`SEARCHING`/`FOUND`) are not cancellable** — they run to completion.
+
+### 10) Trakt.tv Watchlist Sync
+
+An optional background worker that turns a trakt.tv watchlist into requests. It is a *source* of requests only: what happens to them afterwards — ranking, retries, duplicate handling, the job table — is unchanged.
+
+**API contract** (per [trakt's required headers](https://docs.trakt.tv/docs/required-headers) and [get watchlist](https://docs.trakt.tv/reference/getsyncwatchlistget)):
+
+- `GET {TRAKT_BASE_URL}/sync/watchlist/movies/listed_at/desc?page=<n>&limit=<TRAKT_PAGE_LIMIT>`
+- Headers on every call: `Content-Type: application/json`, `trakt-api-version: 2`, `trakt-api-key: <TRAKT_CLIENT_ID>`, `Authorization: Bearer <access token>`.
+- `X-Pagination-Page-Count` ends the walk; a short page is the fallback when the header is absent.
+- `401`/`403` is reported as a rejected credential and is **not** retried by this service — only the application that owns the token file can fix it. Everything else is logged and retried on the next interval.
+
+**Access token.** Read from `TRAKT_TOKEN_FILE`, an XML file another application owns and refreshes (the Emby/Jellyfin trakt plugin's `Trakt.xml`; see `Trakt.xml.example`). The token is loaded **before every sync**, never cached at startup, so a refresh is picked up without a restart. The first `<TraktUser>` carrying an `<AccessToken>` wins — the file identifies media-server users, not trakt applications. A recorded `<AccessTokenExpiration>` in the past is a warning, not a refusal: trakt is the authority on whether a token works. This service never writes the file.
+
+**Scheduling.** Every entry becomes a normal request: `RawTitle` is `Title (Year)`, the query is `Title Year` (or just `Title` when `TRAKT_QUERY_WITH_YEAR=false`), and the normalized query drives the usual duplicate check. Entries are queued oldest-addition-first.
+
+**Never twice.** A processed movie is recorded in `trakt_movies`, keyed by the **trakt movie id** rather than the watchlist entry id: removing a movie from the watchlist and adding it again mints a new entry id and must not read as a new movie. The record is written whether the request was queued or rejected as a duplicate — in both cases the entry has been dealt with — and in the same transaction as the request itself, so the two can never disagree.
+
+**Bounded rescan.** Sorting by `listed_at desc` is what keeps the scan shallow: the walk stops at the first entry older than `MAX(listed_at)` of the movies already processed. That cursor is derived from the rows rather than stored separately, so it cannot drift away from what was actually done. Entries *equal* to the cursor are re-read on purpose (a bulk add gives several entries the same timestamp) and dropped by movie id. Steady state is one API call per interval.
+
+**Failure handling.** A run is all-or-nothing: if a page fails part-way, nothing is queued, because a half-applied run would move the cursor past entries that were never scheduled. A run that stops at `TRAKT_MAX_PAGES` says so in the log rather than silently reporting success.
 
 ---
 

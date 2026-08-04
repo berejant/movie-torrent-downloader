@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // baseEnv sets the variables every configuration needs, so each test only has
@@ -181,4 +182,77 @@ func TestLoadRejectsBadTrackerLists(t *testing.T) {
 			t.Fatalf("error = %v, want it to name TRACKER_CUSTOM_BASE_URL", err)
 		}
 	})
+}
+
+func TestLoadTraktDefaults(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Off unless asked for: an existing deployment gains nothing to configure.
+	if cfg.Trakt.Enabled {
+		t.Error("Trakt.Enabled = true, want false by default")
+	}
+	if got := cfg.Trakt.Interval(); got != 15*time.Minute {
+		t.Errorf("Trakt.Interval() = %v, want 15m", got)
+	}
+	if cfg.Trakt.BaseURL != "https://api.trakt.tv" {
+		t.Errorf("Trakt.BaseURL = %q, want https://api.trakt.tv", cfg.Trakt.BaseURL)
+	}
+	if !cfg.Trakt.QueryWithYear {
+		t.Error("Trakt.QueryWithYear = false, want true by default")
+	}
+}
+
+func TestLoadTraktEnabled(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+	t.Setenv("TRAKT_ENABLED", "true")
+	t.Setenv("TRAKT_CLIENT_ID", "client-id")
+	t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+	t.Setenv("TRAKT_INTERVAL_MINUTES", "5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Trakt.ClientID != "client-id" || cfg.Trakt.TokenFile != "/config/Trakt.xml" {
+		t.Errorf("Trakt = %+v, want the client id and token file bound", cfg.Trakt)
+	}
+	if got := cfg.Trakt.Interval(); got != 5*time.Minute {
+		t.Errorf("Trakt.Interval() = %v, want 5m", got)
+	}
+}
+
+// The trakt variables are only checked once the sync is switched on.
+func TestLoadRejectsIncompleteTrakt(t *testing.T) {
+	tests := map[string]string{
+		"TRAKT_CLIENT_ID":  "TRAKT_TOKEN_FILE",
+		"TRAKT_TOKEN_FILE": "TRAKT_CLIENT_ID",
+	}
+
+	for set, want := range tests {
+		t.Run("only "+set, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("TRACKERS", "toloka")
+			t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+			t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+			t.Setenv("TRAKT_ENABLED", "true")
+			t.Setenv(set, "value")
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want it to name %s", err, want)
+			}
+		})
+	}
 }

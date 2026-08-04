@@ -14,6 +14,7 @@ import (
 	"github.com/toxa/movie-torrent-downloader/internal/config"
 	"github.com/toxa/movie-torrent-downloader/internal/storage"
 	"github.com/toxa/movie-torrent-downloader/internal/tracker"
+	"github.com/toxa/movie-torrent-downloader/internal/trakt"
 	"github.com/toxa/movie-torrent-downloader/internal/web"
 	"github.com/toxa/movie-torrent-downloader/internal/worker"
 )
@@ -70,6 +71,21 @@ func run() error {
 	}
 	pool.Start(ctx)
 
+	// The trakt watchlist is a second source of requests alongside the web form.
+	// It is optional, and a failure to reach trakt must never stop the UI, so it
+	// only ever logs.
+	var syncer *trakt.Syncer
+	if cfg.Trakt.Enabled {
+		client, err := trakt.NewClient(cfg.Trakt, logger)
+		if err != nil {
+			return err
+		}
+		syncer = trakt.NewSyncer(store, client, cfg, pool, logger)
+		syncer.Start(ctx)
+	} else {
+		logger.Info("trakt watchlist sync disabled: TRAKT_ENABLED is not set")
+	}
+
 	server, err := web.New(store, cfg, pool, logger)
 	if err != nil {
 		return err
@@ -80,6 +96,7 @@ func run() error {
 	// The HTTP server has stopped; let the workers finish their current task.
 	logger.Info("waiting for workers to stop")
 	pool.Wait()
+	syncer.Wait()
 	logger.Info("shutdown complete")
 
 	if err != nil && !errors.Is(err, context.Canceled) {

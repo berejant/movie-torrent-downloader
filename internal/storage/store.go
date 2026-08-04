@@ -53,6 +53,25 @@ CREATE INDEX IF NOT EXISTS idx_requests_created    ON requests(created_at DESC);
 -- every tracker, so the queue is global and the old index cannot serve it.
 DROP INDEX IF EXISTS idx_requests_claim;
 CREATE INDEX IF NOT EXISTS idx_requests_queue      ON requests(status, next_attempt_at, created_at);
+
+-- Movies already taken from the trakt.tv watchlist, so a sync never schedules
+-- the same film twice. The key is the trakt movie id rather than the watchlist
+-- entry id: removing a movie from the watchlist and adding it again mints a new
+-- entry id, and that must not read as a new movie.
+--
+-- The row is written whatever the request became — queued, or rejected as a
+-- duplicate of an earlier download — because in both cases the watchlist entry
+-- has been dealt with.
+CREATE TABLE IF NOT EXISTS trakt_movies (
+    movie_id    INTEGER PRIMARY KEY,
+    item_id     INTEGER NOT NULL DEFAULT 0,
+    title       TEXT NOT NULL DEFAULT '',
+    year        INTEGER NOT NULL DEFAULT 0,
+    listed_at   INTEGER NOT NULL,
+    request_id  TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trakt_movies_listed ON trakt_movies(listed_at DESC);
 `
 
 const columns = `id, batch_id, tracker, raw_title, query, normalized_query, status,
@@ -166,6 +185,110 @@ func (s *Store) CreateBatch(
 		return nil, fmt.Errorf("storage: commit batch: %w", err)
 	}
 	return created, nil
+}
+
+// CreateTraktRequests turns watchlist entries into requests, skipping every
+// movie a previous sync already handled. It is CreateBatch plus that skip and
+// the bookkeeping row, in one transaction: a request and the record saying its
+// movie was processed must never disagree.
+//
+// The returned slice holds only the requests that were created, in input order;
+// an already-processed movie is silently absent.
+func (s *Store) CreateTraktRequests(
+	ctx context.Context,
+	items []TraktRequest,
+	checkDuplicates bool,
+) ([]Request, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("storage: begin trakt batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	batchID := NewID()
+	now := s.now()
+	created := make([]Request, 0, len(items))
+
+	for _, item := range items {
+		var processed int
+		err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM trakt_movies WHERE movie_id = ?`, item.MovieID,
+		).Scan(&processed)
+		if err != nil {
+			return nil, fmt.Errorf("storage: trakt movie lookup: %w", err)
+		}
+		if processed > 0 {
+			continue
+		}
+
+		request := Request{
+			ID:              NewID(),
+			BatchID:         batchID,
+			RawTitle:        item.RawTitle,
+			Query:           item.Query,
+			NormalizedQuery: item.NormalizedQuery,
+			Status:          StatusQueued,
+			Force:           item.Force,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+
+		if checkDuplicates && !item.Force {
+			original, err := duplicateOf(ctx, tx, item.NormalizedQuery, "")
+			if err != nil {
+				return nil, err
+			}
+			if original != "" {
+				request.Status = StatusDuplicate
+				request.LastError = "duplicate of request " + original
+			}
+		}
+
+		if err := insert(ctx, tx, request); err != nil {
+			return nil, err
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO trakt_movies
+			     (movie_id, item_id, title, year, listed_at, request_id, created_at)
+			 VALUES (?,?,?,?,?,?,?)`,
+			item.MovieID, item.ItemID, item.RawTitle, item.Year,
+			item.ListedAt.UTC().Unix(), request.ID, now.Unix(),
+		); err != nil {
+			return nil, fmt.Errorf("storage: insert trakt movie: %w", err)
+		}
+
+		created = append(created, request)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("storage: commit trakt batch: %w", err)
+	}
+	return created, nil
+}
+
+// TraktCursor returns the listed_at of the newest watchlist entry already
+// processed, or the zero time when none is. The sync walks the watchlist newest
+// first and stops at the first entry older than this, so a steady state costs
+// one page instead of the whole list.
+//
+// It is derived from the rows rather than stored separately, so the cursor
+// cannot drift away from what was actually processed.
+func (s *Store) TraktCursor(ctx context.Context) (time.Time, error) {
+	var listedAt sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(listed_at) FROM trakt_movies`,
+	).Scan(&listedAt); err != nil {
+		return time.Time{}, fmt.Errorf("storage: trakt cursor: %w", err)
+	}
+	if !listedAt.Valid {
+		return time.Time{}, nil
+	}
+	return time.Unix(listedAt.Int64, 0).UTC(), nil
 }
 
 // rowQuerier is satisfied by both *sql.DB and *sql.Tx, so the duplicate lookup

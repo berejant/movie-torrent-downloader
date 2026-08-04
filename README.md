@@ -55,6 +55,47 @@ Any preset value can be corrected without a code change via
 falls back to the legacy single-tracker layout on unprefixed `TRACKER_*`
 variables, so an existing `.env` keeps working.
 
+## Trakt.tv watchlist
+
+A background worker can poll a [trakt.tv](https://trakt.tv) watchlist and queue
+every new movie for download, exactly as if it had been typed into the form.
+
+```sh
+TRAKT_ENABLED=true
+TRAKT_CLIENT_ID=…              # your trakt application's client id
+TRAKT_TOKEN_FILE=/config/Trakt.xml
+TRAKT_INTERVAL_MINUTES=15
+```
+
+It reads `GET /sync/watchlist/movies/listed_at/desc` with the headers trakt
+requires (`trakt-api-key`, `trakt-api-version: 2`, `Content-Type` and the bearer
+token) and turns each entry into a normal request — same queue, same ranking,
+same job table.
+
+**The access token comes from a file this service never writes.** Point
+`TRAKT_TOKEN_FILE` at the `Trakt.xml` of the Emby/Jellyfin trakt plugin (see
+[Trakt.xml.example](Trakt.xml.example)): that plugin owns the OAuth refresh, and
+the token is re-read from disk before every sync, so a refresh on that side is
+picked up without a restart. Mount it read-only:
+
+```sh
+-v /volume1/docker/emby/config/plugins/configurations/Trakt.xml:/config/Trakt.xml:ro
+```
+
+**Each movie is scheduled once.** Processed movies are recorded by their trakt
+movie id, so removing a title from the watchlist and adding it back does not
+download it again. Because the list is read newest-addition-first, a sync stops
+at the last entry it already knows: the steady-state cost is a single API call
+every 15 minutes, whatever the length of the watchlist. A first import longer
+than `TRAKT_PAGE_LIMIT × TRAKT_MAX_PAGES` (10 000 movies by default) continues
+on the following runs.
+
+Queries include the year — `Extraction 2020` — because that is what separates
+two films sharing a title; set `TRAKT_QUERY_WITH_YEAR=false` if a tracker's
+search matches titles literally and the year costs matches. Anything the
+trackers cannot find lands in the job table as `NOT_FOUND`, where the query can
+be edited and retried as usual.
+
 ## Quick start (Docker Compose)
 
 ```sh
@@ -142,6 +183,10 @@ the annotated list. The ones that matter most:
 | `TRACKER_<SLUG>_RPS` | `1` | request rate for that tracker |
 | `AUTH_USER` / `AUTH_PASSWORD` | unset | enables basic auth when both are set |
 | `PUID` / `PGID` | `1000` | container user, must own the mounts |
+| `TRAKT_ENABLED` | `false` | poll a trakt.tv watchlist for movies |
+| `TRAKT_CLIENT_ID` | unset | trakt application client id, sent as `trakt-api-key` |
+| `TRAKT_TOKEN_FILE` | unset | path to the `Trakt.xml` holding the access token |
+| `TRAKT_INTERVAL_MINUTES` | `15` | how often the watchlist is polled |
 
 ## Endpoints
 
@@ -183,6 +228,13 @@ so requests keep completing while one source is broken.
 
 **Permission denied writing torrents.** `PUID`/`PGID` do not match the share
 owner. `/health/ready` reports this directly.
+
+**The trakt watchlist is not producing anything.** Every sync logs one line
+(`trakt watchlist synced`) with what it scanned and queued. `trakt rejected the
+access token` means the token in `Trakt.xml` is stale — the plugin that owns the
+file has to refresh it; this service only reads it. A missing or unreadable file
+is logged the same way and retried on the next interval, so the container keeps
+serving the UI either way.
 
 **Login fails.** Check the credentials first; if they are right, the login form
 field names may have changed — they are overridable in

@@ -52,6 +52,54 @@ type Config struct {
 	Trackers []Tracker `env:"-"`
 
 	Retry Retry `envPrefix:"RETRY_"`
+
+	Trakt Trakt `envPrefix:"TRAKT_"`
+}
+
+// Trakt configures the background sync that turns a trakt.tv watchlist into
+// download requests. It is off unless TRAKT_ENABLED is set, so an existing
+// deployment is unaffected by the upgrade.
+type Trakt struct {
+	Enabled bool `env:"ENABLED" envDefault:"false"`
+
+	// ClientID is the trakt application client id, sent as trakt-api-key.
+	ClientID string `env:"CLIENT_ID"`
+
+	// TokenFile is the Trakt.xml written by the Emby/Jellyfin trakt plugin.
+	// Another application owns it: the access token is read from it on every
+	// run rather than cached, so a refresh there is picked up here.
+	TokenFile string `env:"TOKEN_FILE"`
+
+	BaseURL string `env:"BASE_URL" envDefault:"https://api.trakt.tv"`
+
+	// IntervalMinutes is how often the watchlist is polled. The first sync runs
+	// at startup, not after the first interval.
+	IntervalMinutes int `env:"INTERVAL_MINUTES" envDefault:"15"`
+
+	TimeoutSeconds int `env:"TIMEOUT_SECONDS" envDefault:"30"`
+
+	// PageLimit is the watchlist page size. MaxPages bounds one sync, so an
+	// enormous watchlist cannot turn a single run into an unbounded crawl; the
+	// remainder is picked up on the following runs.
+	PageLimit int `env:"PAGE_LIMIT" envDefault:"100"`
+	MaxPages  int `env:"MAX_PAGES" envDefault:"10"`
+
+	// QueryWithYear appends the release year to the search query. It is on by
+	// default because the year is what separates two movies sharing a title:
+	// without it the duplicate check would reject the remake of a film that was
+	// already downloaded. Turn it off if a tracker's search matches titles
+	// literally and the year costs matches.
+	QueryWithYear bool `env:"QUERY_WITH_YEAR" envDefault:"true"`
+}
+
+// Interval returns the polling period.
+func (t Trakt) Interval() time.Duration {
+	return time.Duration(t.IntervalMinutes) * time.Minute
+}
+
+// Timeout returns the per-request timeout for the trakt API.
+func (t Trakt) Timeout() time.Duration {
+	return time.Duration(t.TimeoutSeconds) * time.Second
 }
 
 // Tracker holds the configuration of a single tracker source. Its variables are
@@ -378,6 +426,44 @@ func (c Config) Validate() error {
 		problems = append(problems, "RETRY_MAX_BACKOFF_SECONDS must be >= RETRY_BASE_SECONDS")
 	}
 
+	// The trakt settings are only worth checking once the sync is switched on;
+	// an unused block of empty variables is not a misconfiguration.
+	if c.Trakt.Enabled {
+		if strings.TrimSpace(c.Trakt.ClientID) == "" {
+			problems = append(problems, "TRAKT_CLIENT_ID must be set when TRAKT_ENABLED is true")
+		}
+		if strings.TrimSpace(c.Trakt.TokenFile) == "" {
+			problems = append(problems, "TRAKT_TOKEN_FILE must be set when TRAKT_ENABLED is true")
+		}
+
+		base, err := url.Parse(strings.TrimRight(c.Trakt.BaseURL, "/"))
+		switch {
+		case strings.TrimSpace(c.Trakt.BaseURL) == "":
+			problems = append(problems, "TRAKT_BASE_URL must not be empty")
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("TRAKT_BASE_URL is not a valid URL: %v", err))
+		case base.Scheme != "http" && base.Scheme != "https":
+			problems = append(problems, "TRAKT_BASE_URL must use http or https")
+		case base.Host == "":
+			problems = append(problems, "TRAKT_BASE_URL must include a host")
+		}
+
+		if c.Trakt.IntervalMinutes < 1 {
+			problems = append(problems, fmt.Sprintf("TRAKT_INTERVAL_MINUTES must be >= 1, got %d", c.Trakt.IntervalMinutes))
+		}
+		if c.Trakt.TimeoutSeconds < 1 {
+			problems = append(problems, fmt.Sprintf("TRAKT_TIMEOUT_SECONDS must be >= 1, got %d", c.Trakt.TimeoutSeconds))
+		}
+		// 1000 is the largest page trakt serves; asking for more is silently
+		// capped there, which would make MaxPages mean less than it says.
+		if c.Trakt.PageLimit < 1 || c.Trakt.PageLimit > 1000 {
+			problems = append(problems, fmt.Sprintf("TRAKT_PAGE_LIMIT must be 1-1000, got %d", c.Trakt.PageLimit))
+		}
+		if c.Trakt.MaxPages < 1 {
+			problems = append(problems, fmt.Sprintf("TRAKT_MAX_PAGES must be >= 1, got %d", c.Trakt.MaxPages))
+		}
+	}
+
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
 	}
@@ -442,6 +528,17 @@ func (c Config) LogValue() slog.Value {
 			slog.Int("max_attempts", c.Retry.MaxAttempts),
 			slog.Int("base_seconds", c.Retry.BaseSeconds),
 			slog.Int("max_backoff_seconds", c.Retry.MaxBackoffSeconds),
+		),
+		slog.Group("trakt",
+			slog.Bool("enabled", c.Trakt.Enabled),
+			slog.String("client_id", redact(c.Trakt.ClientID)),
+			slog.String("token_file", c.Trakt.TokenFile),
+			slog.String("base_url", c.Trakt.BaseURL),
+			slog.Int("interval_minutes", c.Trakt.IntervalMinutes),
+			slog.Int("timeout_seconds", c.Trakt.TimeoutSeconds),
+			slog.Int("page_limit", c.Trakt.PageLimit),
+			slog.Int("max_pages", c.Trakt.MaxPages),
+			slog.Bool("query_with_year", c.Trakt.QueryWithYear),
 		),
 	)
 }

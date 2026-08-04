@@ -110,3 +110,19 @@ type NewRequest struct {
 	NormalizedQuery string
 	Force           bool
 }
+
+// TraktRequest is one trakt.tv watchlist entry ready to be scheduled: the
+// request to create plus the identity that keeps the next sync from creating
+// it again.
+type TraktRequest struct {
+	NewRequest
+
+	// MovieID is the trakt id of the movie; it is the deduplication key.
+	MovieID int64
+	// ItemID is the watchlist entry id, kept for troubleshooting only.
+	ItemID int64
+	Year   int
+	// ListedAt is when the movie was added to the watchlist. The newest one
+	// processed becomes the cursor for the next sync.
+	ListedAt time.Time
+}
