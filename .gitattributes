@@ -1,0 +1,4 @@
+# Saved tracker pages the parser presets and their tests are written against.
+# They are fixtures, not source: without this they are the largest thing in the
+# repository and GitHub reports it as an HTML project.
+html-examples/** linguist-vendored
