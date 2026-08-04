@@ -90,6 +90,25 @@ every 15 minutes, whatever the length of the watchlist. A first import longer
 than `TRAKT_PAGE_LIMIT × TRAKT_MAX_PAGES` (10 000 movies by default) continues
 on the following runs.
 
+### Monitoring the sync
+
+Nothing runs in front of a background worker, so set `TRAKT_HEALTHCHECK_UUID` to
+a [healthchecks.io](https://healthchecks.io) check id (or your own installation,
+via `TRAKT_HEALTHCHECK_BASE_URL`) and the sync will report itself:
+
+- every **successful** sync pings `<base>/<uuid>`, with the counts as the event
+  log entry;
+- **failures are counted, not reported** — the first four in a row are logged
+  and left to the next run, and only the fifth pings `<base>/<uuid>/fail`. A
+  success resets the count. At the default interval that means an alert stands
+  for "the watchlist has been unread for over an hour", not for one bad request;
+- a shutdown is neither, and pings are retried three times so a blip reaching
+  the monitor cannot raise a false alarm.
+
+Leave the UUID unset and no signals are sent at all. Give the check a period of
+`TRAKT_INTERVAL_MINUTES` and a grace period of a few intervals, so the monitor
+also catches the case this cannot report on itself: the sync not running.
+
 Queries include the year — `Extraction 2020` — because that is what separates
 two films sharing a title; set `TRAKT_QUERY_WITH_YEAR=false` if a tracker's
 search matches titles literally and the year costs matches. Anything the
@@ -187,6 +206,7 @@ the annotated list. The ones that matter most:
 | `TRAKT_CLIENT_ID` | unset | trakt application client id, sent as `trakt-api-key` |
 | `TRAKT_TOKEN_FILE` | unset | path to the `Trakt.xml` holding the access token |
 | `TRAKT_INTERVAL_MINUTES` | `15` | how often the watchlist is polled |
+| `TRAKT_HEALTHCHECK_UUID` | unset | healthchecks.io check id; unset = no signals |
 
 ## Endpoints
 

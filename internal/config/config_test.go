@@ -256,3 +256,49 @@ func TestLoadRejectsIncompleteTrakt(t *testing.T) {
 		})
 	}
 }
+
+// The healthcheck id is optional; a pasted ping URL instead of the bare UUID
+// would otherwise fail silently against the wrong endpoint.
+func TestLoadRejectsABadHealthcheckUUID(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+	t.Setenv("TRAKT_ENABLED", "true")
+	t.Setenv("TRAKT_CLIENT_ID", "client-id")
+	t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+
+	t.Run("full ping url", func(t *testing.T) {
+		t.Setenv("TRAKT_HEALTHCHECK_UUID", "https://hc-ping.com/c38a1b6c-0607-4e4c-8bbf-fc2d50e1f0e1")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "TRAKT_HEALTHCHECK_UUID") {
+			t.Fatalf("error = %v, want it to name TRAKT_HEALTHCHECK_UUID", err)
+		}
+	})
+
+	t.Run("valid uuid", func(t *testing.T) {
+		t.Setenv("TRAKT_HEALTHCHECK_UUID", "c38a1b6c-0607-4e4c-8bbf-fc2d50e1f0e1")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Trakt.HealthcheckBaseURL != "https://hc-ping.com" {
+			t.Errorf("HealthcheckBaseURL = %q, want the hosted endpoint", cfg.Trakt.HealthcheckBaseURL)
+		}
+	})
+
+	// Unset is the default and must stay valid: signalling is opt-in.
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("TRAKT_HEALTHCHECK_UUID", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Trakt.HealthcheckUUID != "" {
+			t.Errorf("HealthcheckUUID = %q, want empty", cfg.Trakt.HealthcheckUUID)
+		}
+	})
+}

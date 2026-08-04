@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,10 @@ import (
 	"github.com/caarlos0/env/v10"
 	"github.com/joho/godotenv"
 )
+
+// reUUID matches the canonical 8-4-4-4-12 form, which is what a healthchecks
+// check id is.
+var reUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // DefaultUserAgent makes tracker requests look like a current desktop Chrome.
 const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -83,6 +88,16 @@ type Trakt struct {
 	// remainder is picked up on the following runs.
 	PageLimit int `env:"PAGE_LIMIT" envDefault:"100"`
 	MaxPages  int `env:"MAX_PAGES" envDefault:"10"`
+
+	// HealthcheckUUID is the check id at healthchecks.io (or a self-hosted
+	// install) that the sync signals. Unset means no signals are sent at all:
+	// the sync is not something the operator watches, so it either reports to a
+	// monitor or goes unmonitored.
+	HealthcheckUUID string `env:"HEALTHCHECK_UUID"`
+
+	// HealthcheckBaseURL is the ping endpoint; override it for a self-hosted
+	// healthchecks install.
+	HealthcheckBaseURL string `env:"HEALTHCHECK_BASE_URL" envDefault:"https://hc-ping.com"`
 
 	// QueryWithYear appends the release year to the search query. It is on by
 	// default because the year is what separates two movies sharing a title:
@@ -462,6 +477,27 @@ func (c Config) Validate() error {
 		if c.Trakt.MaxPages < 1 {
 			problems = append(problems, fmt.Sprintf("TRAKT_MAX_PAGES must be >= 1, got %d", c.Trakt.MaxPages))
 		}
+
+		if uuid := strings.TrimSpace(c.Trakt.HealthcheckUUID); uuid != "" {
+			// A pasted ping URL instead of the bare id would produce a working
+			// but wrong request, so it is worth naming the mistake here.
+			if !reUUID.MatchString(uuid) {
+				problems = append(problems, fmt.Sprintf(
+					"TRAKT_HEALTHCHECK_UUID must be the check UUID alone, got %q", uuid))
+			}
+
+			base, err := url.Parse(strings.TrimRight(c.Trakt.HealthcheckBaseURL, "/"))
+			switch {
+			case strings.TrimSpace(c.Trakt.HealthcheckBaseURL) == "":
+				problems = append(problems, "TRAKT_HEALTHCHECK_BASE_URL must not be empty")
+			case err != nil:
+				problems = append(problems, fmt.Sprintf("TRAKT_HEALTHCHECK_BASE_URL is not a valid URL: %v", err))
+			case base.Scheme != "http" && base.Scheme != "https":
+				problems = append(problems, "TRAKT_HEALTHCHECK_BASE_URL must use http or https")
+			case base.Host == "":
+				problems = append(problems, "TRAKT_HEALTHCHECK_BASE_URL must include a host")
+			}
+		}
 	}
 
 	if len(problems) > 0 {
@@ -539,6 +575,9 @@ func (c Config) LogValue() slog.Value {
 			slog.Int("page_limit", c.Trakt.PageLimit),
 			slog.Int("max_pages", c.Trakt.MaxPages),
 			slog.Bool("query_with_year", c.Trakt.QueryWithYear),
+			slog.Bool("healthcheck_enabled", strings.TrimSpace(c.Trakt.HealthcheckUUID) != ""),
+			slog.String("healthcheck_uuid", redact(c.Trakt.HealthcheckUUID)),
+			slog.String("healthcheck_base_url", c.Trakt.HealthcheckBaseURL),
 		),
 	)
 }

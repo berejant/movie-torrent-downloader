@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/toxa/movie-torrent-downloader/internal/config"
+	"github.com/toxa/movie-torrent-downloader/internal/healthcheck"
 	"github.com/toxa/movie-torrent-downloader/internal/media"
 	"github.com/toxa/movie-torrent-downloader/internal/storage"
 )
@@ -38,10 +39,23 @@ type Syncer struct {
 	store    Store
 	client   *Client
 	notifier Notifier
+	health   *healthcheck.Pinger
 	logger   *slog.Logger
+
+	// failures counts consecutive failed runs, for the healthcheck signal. It
+	// is only touched by the sync loop.
+	failures int
 
 	wg sync.WaitGroup
 }
+
+// failuresBeforeAlert is how many runs in a row must fail before the monitor is
+// told the sync is down. A single failure is unremarkable — the token file may
+// be mid-rewrite, trakt may be briefly unreachable — and the next run an hour
+// and a quarter later is a better answer than an alert. Five in a row is not a
+// blip: at the default interval it means the watchlist has been unread for over
+// an hour.
+const failuresBeforeAlert = 5
 
 // NewSyncer builds the syncer. Call Start to run it.
 func NewSyncer(store Store, client *Client, cfg config.Config, notifier Notifier, logger *slog.Logger) *Syncer {
@@ -51,6 +65,7 @@ func NewSyncer(store Store, client *Client, cfg config.Config, notifier Notifier
 		store:           store,
 		client:          client,
 		notifier:        notifier,
+		health:          healthcheck.New(cfg.Trakt.HealthcheckBaseURL, cfg.Trakt.HealthcheckUUID, logger),
 		logger:          logger.With("component", "trakt"),
 	}
 }
@@ -62,6 +77,7 @@ func (s *Syncer) Start(ctx context.Context) {
 	s.logger.Info("trakt watchlist sync started",
 		"interval", s.cfg.Interval(),
 		"token_file", s.cfg.TokenFile,
+		"healthcheck", s.health.Enabled(),
 	)
 }
 
@@ -91,20 +107,26 @@ func (s *Syncer) run(ctx context.Context) {
 	}
 }
 
-// syncAndLog runs one pass and reports it. A failure is never fatal: the token
-// file may not have been written yet, or trakt may be down, and the next tick
-// is a perfectly good retry.
+// syncAndLog runs one pass, reports it, and signals the healthcheck monitor. A
+// failure is never fatal: the token file may not have been written yet, or
+// trakt may be down, and the next tick is a perfectly good retry.
 func (s *Syncer) syncAndLog(ctx context.Context) {
 	summary, err := s.SyncOnce(ctx)
-	switch {
-	case ctx.Err() != nil:
+
+	// A cancelled context is the shutdown, not a failed run: it must neither
+	// count towards the failure streak nor reset it.
+	if ctx.Err() != nil {
 		return
-	case errors.Is(err, ErrUnauthorized):
-		s.logger.Error("trakt rejected the access token; waiting for the token file to be refreshed",
-			"token_file", s.cfg.TokenFile, "err", err)
-		return
-	case err != nil:
-		s.logger.Error("trakt watchlist sync failed", "err", err)
+	}
+
+	if err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			s.logger.Error("trakt rejected the access token; waiting for the token file to be refreshed",
+				"token_file", s.cfg.TokenFile, "err", err)
+		} else {
+			s.logger.Error("trakt watchlist sync failed", "err", err)
+		}
+		s.signalFailure(ctx, err)
 		return
 	}
 
@@ -116,6 +138,27 @@ func (s *Syncer) syncAndLog(ctx context.Context) {
 		"duplicates", summary.Duplicates,
 		"skipped", summary.Skipped,
 	)
+
+	s.failures = 0
+	s.health.Success(ctx, fmt.Sprintf(
+		"watchlist synced: %d scanned, %d new, %d queued, %d duplicate, %d skipped, over %d page(s)",
+		summary.Scanned, summary.New, summary.Queued, summary.Duplicates, summary.Skipped, summary.Pages))
+}
+
+// signalFailure counts the failed run and tells the monitor once the streak is
+// long enough to mean something. Below the threshold the failure is a log line
+// only: the check stays up, and its own grace period is what catches a sync
+// that has stopped running altogether.
+func (s *Syncer) signalFailure(ctx context.Context, err error) {
+	s.failures++
+
+	if s.failures < failuresBeforeAlert {
+		s.logger.Info("waiting for the next sync before alerting",
+			"consecutive_failures", s.failures, "alert_after", failuresBeforeAlert)
+		return
+	}
+
+	s.health.Fail(ctx, fmt.Sprintf("%d consecutive failed syncs, last error: %v", s.failures, err))
 }
 
 // Summary is what one pass did, for the log line and for tests.

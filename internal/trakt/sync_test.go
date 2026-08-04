@@ -2,8 +2,12 @@ package trakt
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/toxa/movie-torrent-downloader/internal/config"
@@ -318,6 +322,160 @@ func TestSyncMarksDuplicatesAsProcessed(t *testing.T) {
 	}
 	if again.New != 0 {
 		t.Errorf("New = %d on the second run, want 0", again.New)
+	}
+}
+
+// healthRecorder is a stand-in for healthchecks.io.
+type healthRecorder struct {
+	*httptest.Server
+
+	mu    sync.Mutex
+	paths []string
+}
+
+func newHealthRecorder(t *testing.T) *healthRecorder {
+	t.Helper()
+
+	rec := &healthRecorder{}
+	rec.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.mu.Lock()
+		rec.paths = append(rec.paths, r.URL.Path)
+		rec.mu.Unlock()
+		_, _ = io.WriteString(w, "OK")
+	}))
+	t.Cleanup(rec.Close)
+
+	return rec
+}
+
+// signals reports the pings received as "ok" and "fail", in order.
+func (r *healthRecorder) signals() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]string, 0, len(r.paths))
+	for _, path := range r.paths {
+		if strings.HasSuffix(path, "/fail") {
+			out = append(out, "fail")
+			continue
+		}
+		out = append(out, "ok")
+	}
+	return out
+}
+
+const healthUUID = "c38a1b6c-0607-4e4c-8bbf-fc2d50e1f0e1"
+
+func TestSyncSignalsSuccess(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+	health := newHealthRecorder(t)
+
+	syncer, _, _ := newSyncer(t, fake, func(cfg *config.Config) {
+		cfg.Trakt.HealthcheckUUID = healthUUID
+		cfg.Trakt.HealthcheckBaseURL = health.URL
+	})
+
+	syncer.syncAndLog(context.Background())
+
+	if got := health.signals(); len(got) != 1 || got[0] != "ok" {
+		t.Fatalf("signals = %v, want one success", got)
+	}
+}
+
+// Four failures are a bad afternoon, not an outage: the fifth is what alerts.
+func TestSyncSignalsFailureOnlyAfterFiveInARow(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+	health := newHealthRecorder(t)
+
+	syncer, _, _ := newSyncer(t, fake, func(cfg *config.Config) {
+		cfg.Trakt.HealthcheckUUID = healthUUID
+		cfg.Trakt.HealthcheckBaseURL = health.URL
+	})
+
+	fake.setStatus(http.StatusInternalServerError)
+	ctx := context.Background()
+
+	for i := 1; i < failuresBeforeAlert; i++ {
+		syncer.syncAndLog(ctx)
+		if got := health.signals(); len(got) != 0 {
+			t.Fatalf("after %d failure(s) signals = %v, want none yet", i, got)
+		}
+	}
+
+	syncer.syncAndLog(ctx)
+	if got := health.signals(); len(got) != 1 || got[0] != "fail" {
+		t.Fatalf("signals = %v, want one failure after %d failed runs", got, failuresBeforeAlert)
+	}
+
+	// Still failing: the monitor keeps being told, so the check stays down.
+	syncer.syncAndLog(ctx)
+	if got := health.signals(); len(got) != 2 || got[1] != "fail" {
+		t.Fatalf("signals = %v, want a second failure", got)
+	}
+
+	// Recovered: the streak resets, so the next four failures are quiet again.
+	fake.setStatus(0)
+	syncer.syncAndLog(ctx)
+	if got := health.signals(); len(got) != 3 || got[2] != "ok" {
+		t.Fatalf("signals = %v, want a success once the sync recovers", got)
+	}
+	if syncer.failures != 0 {
+		t.Errorf("failures = %d after a successful run, want 0", syncer.failures)
+	}
+}
+
+// A shutdown is not a failed run: it must not push the streak towards an alert.
+func TestSyncDoesNotSignalOnShutdown(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+	health := newHealthRecorder(t)
+
+	syncer, _, _ := newSyncer(t, fake, func(cfg *config.Config) {
+		cfg.Trakt.HealthcheckUUID = healthUUID
+		cfg.Trakt.HealthcheckBaseURL = health.URL
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	syncer.syncAndLog(ctx)
+
+	if got := health.signals(); len(got) != 0 {
+		t.Errorf("signals = %v, want none during shutdown", got)
+	}
+	if syncer.failures != 0 {
+		t.Errorf("failures = %d, want 0: a cancelled run is not a failed run", syncer.failures)
+	}
+}
+
+// Without a configured id nothing is ever sent, and the sync is unaffected.
+func TestSyncWithoutAHealthcheckSendsNothing(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+	health := newHealthRecorder(t)
+
+	// Base URL set, id left empty: the id alone decides.
+	syncer, store, _ := newSyncer(t, fake, func(cfg *config.Config) {
+		cfg.Trakt.HealthcheckBaseURL = health.URL
+	})
+
+	syncer.syncAndLog(context.Background())
+	fake.setStatus(http.StatusInternalServerError)
+	for range failuresBeforeAlert {
+		syncer.syncAndLog(context.Background())
+	}
+
+	if got := health.signals(); len(got) != 0 {
+		t.Errorf("signals = %v, want none when no UUID is configured", got)
+	}
+	if got := len(queries(t, store)); got != 1 {
+		t.Errorf("got %d requests, want the sync itself to be unaffected", got)
 	}
 }
 

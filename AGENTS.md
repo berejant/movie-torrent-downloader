@@ -164,6 +164,8 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 | `TRAKT_PAGE_LIMIT` | `100` | watchlist page size, max `1000` |
 | `TRAKT_MAX_PAGES` | `10` | pages per run; the remainder follows on the next run |
 | `TRAKT_QUERY_WITH_YEAR` | `true` | search `Extraction 2020` rather than `Extraction` |
+| `TRAKT_HEALTHCHECK_UUID` | unset | healthchecks.io check id; **unset means no signals are sent** |
+| `TRAKT_HEALTHCHECK_BASE_URL` | `https://hc-ping.com` | ping endpoint, for a self-hosted healthchecks |
 
 Configuration behavior:
 - Validate required env vars on startup.
@@ -352,6 +354,14 @@ An optional background worker that turns a trakt.tv watchlist into requests. It 
 **Bounded rescan.** Sorting by `listed_at desc` is what keeps the scan shallow: the walk stops at the first entry older than `MAX(listed_at)` of the movies already processed. That cursor is derived from the rows rather than stored separately, so it cannot drift away from what was actually done. Entries *equal* to the cursor are re-read on purpose (a bulk add gives several entries the same timestamp) and dropped by movie id. Steady state is one API call per interval.
 
 **Failure handling.** A run is all-or-nothing: if a page fails part-way, nothing is queued, because a half-applied run would move the cursor past entries that were never scheduled. A run that stops at `TRAKT_MAX_PAGES` says so in the log rather than silently reporting success.
+
+**Healthcheck signalling.** Nothing runs in front of a background worker, so the sync reports itself to a healthchecks.io-style monitor when `TRAKT_HEALTHCHECK_UUID` is set. Unset is not an error — it means no signals are sent at all, and the sync behaves identically otherwise.
+
+- Success pings `<base>/<uuid>` after every successful run, with the run's counts as the ping body (the monitor's event log).
+- Failure is **counted, not reported**: consecutive failures below 5 are logged and left for the next run, and the 5th consecutive failure pings `<base>/<uuid>/fail` with the streak length and the last error. Every further failure keeps pinging, so the check stays down. A successful run resets the counter.
+- A context cancelled by shutdown is neither a success nor a failure, and must not move the counter.
+- The counter is in memory: a restart starts a fresh streak, which is correct — a restarted process has not failed 5 times.
+- A ping is retried 3 times, 2s apart, with a 10s timeout. An unreachable monitor is a warning in the log and never propagates: the job it reports on has already done its work. This is why the monitor should also carry a period and grace period — the one thing a self-report cannot cover is the sync not running at all.
 
 ---
 
