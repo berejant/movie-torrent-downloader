@@ -20,9 +20,9 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/media"
-	"github.com/toxa/movie-torrent-downloader/internal/storage"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/storage"
 )
 
 //go:embed templates/*.html

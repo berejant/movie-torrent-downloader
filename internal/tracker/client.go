@@ -25,8 +25,8 @@ import (
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/media"
 )
 
 // maxTorrentFileSize caps what we are willing to read from a download link.

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/config"
 )
 
 const (

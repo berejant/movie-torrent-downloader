@@ -10,8 +10,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/toxa/movie-torrent-downloader/internal/media"
-	"github.com/toxa/movie-torrent-downloader/internal/storage"
+	"github.com/berejant/movie-torrent-finder/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/storage"
 )
 
 // listLimit caps how many rows the table renders at once.

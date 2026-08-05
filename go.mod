@@ -1,4 +1,4 @@
-module github.com/toxa/movie-torrent-downloader
+module github.com/berejant/movie-torrent-finder
 
 go 1.26.4
 

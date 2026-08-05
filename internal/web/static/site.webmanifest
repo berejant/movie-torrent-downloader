@@ -1,5 +1,5 @@
 {
-  "name": "Movie Torrent Downloader",
+  "name": "Movie Torrent Finder",
   "short_name": "Torrents",
   "icons": [
     { "src": "/static/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },

@@ -1,8 +1,8 @@
 services:
-  movie-torrent-downloader:
+  movie-torrent-finder:
     build: .
-    image: movie-torrent-downloader:latest
-    container_name: movie-torrent-downloader
+    image: movie-torrent-finder:latest
+    container_name: movie-torrent-finder
     restart: unless-stopped
 
     # Every value lives in .env — copy .env.example and edit it.

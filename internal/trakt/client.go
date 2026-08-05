@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/config"
 )
 
 // ErrUnauthorized means trakt rejected the access token or the client id. It is

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/healthcheck"
-	"github.com/toxa/movie-torrent-downloader/internal/media"
-	"github.com/toxa/movie-torrent-downloader/internal/storage"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/healthcheck"
+	"github.com/berejant/movie-torrent-finder/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/storage"
 )
 
 // Store is the persistence the syncer needs; *storage.Store satisfies it.

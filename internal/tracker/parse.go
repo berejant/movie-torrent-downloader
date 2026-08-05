@@ -6,7 +6,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/toxa/movie-torrent-downloader/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/media"
 )
 
 // Seeder and leecher columns are parsed by nobody on purpose: results are

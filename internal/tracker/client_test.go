@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/media"
 )
 
 // The fixture mirrors the markup the default selectors target on the real

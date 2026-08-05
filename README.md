@@ -1,4 +1,4 @@
-# Movie Torrent Downloader
+# Movie Torrent Finder
 
 Searches one or more torrent trackers for a list of movie titles and saves the
 matching `.torrent` files to a directory a download client watches. It never
@@ -128,16 +128,16 @@ Open <http://localhost:8080>.
 ## Quick start (docker run)
 
 ```sh
-docker build -t movie-torrent-downloader .
+docker build -t movie-torrent-finder .
 
 docker run -d \
-  --name movie-torrent-downloader \
+  --name movie-torrent-finder \
   --restart unless-stopped \
   --env-file .env \
   -p 8080:8080 \
   -v /volume1/downloads/torrents:/torrents \
   -v /volume1/docker/mtd/db:/data \
-  movie-torrent-downloader
+  movie-torrent-finder
 ```
 
 ### Synology notes
@@ -178,7 +178,7 @@ Every build is also tagged with its short commit SHA.
 Pull a published image with:
 
 ```sh
-docker pull ghcr.io/<owner>/movie-torrent-downloader:latest
+docker pull ghcr.io/<owner>/movie-torrent-finder:latest
 ```
 
 Packages are private by default — make the package public (or log the NAS in

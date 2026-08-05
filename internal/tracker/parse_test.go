@@ -10,8 +10,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/media"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/media"
 )
 
 // The fixtures are pages saved from the live trackers, kept in the repository

@@ -1,4 +1,4 @@
-// Command server runs the movie torrent downloader: an HTTP UI for scheduling
+// Command server runs the movie torrent finder: an HTTP UI for scheduling
 // tracker searches and a worker pool that saves the resulting .torrent files.
 package main
 
@@ -11,12 +11,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/toxa/movie-torrent-downloader/internal/config"
-	"github.com/toxa/movie-torrent-downloader/internal/storage"
-	"github.com/toxa/movie-torrent-downloader/internal/tracker"
-	"github.com/toxa/movie-torrent-downloader/internal/trakt"
-	"github.com/toxa/movie-torrent-downloader/internal/web"
-	"github.com/toxa/movie-torrent-downloader/internal/worker"
+	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/storage"
+	"github.com/berejant/movie-torrent-finder/internal/tracker"
+	"github.com/berejant/movie-torrent-finder/internal/trakt"
+	"github.com/berejant/movie-torrent-finder/internal/web"
+	"github.com/berejant/movie-torrent-finder/internal/worker"
 )
 
 func main() {
@@ -36,7 +36,7 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
 	slog.SetDefault(logger)
-	logger.Info("starting movie torrent downloader", "config", cfg)
+	logger.Info("starting movie torrent finder", "config", cfg)
 
 	// The output directory must exist and be writable before anything else:
 	// on Synology this is where a wrong PUID/PGID shows up.
